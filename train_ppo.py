@@ -4,6 +4,7 @@ import numpy as np
 import os
 import time
 from collections import deque
+from torch.utils.tensorboard import SummaryWriter
 
 # Import custom modules
 from env_wrappers import GrayScaleObservation, FrameStack
@@ -37,6 +38,7 @@ config = {
     "save_interval": 10, # Save model every N rollouts
     "save_dir": "./models/ppo_carracing",
     "log_dir": "./logs/ppo_carracing",
+    "load_checkpoint_path": "./models/ppo_carracing/ppo_carracing_471040.pth", # Path to load a checkpoint from, None to train from scratch
     # TODO: Implement TensorBoard logging
 
     # Hardware
@@ -98,9 +100,9 @@ if __name__ == "__main__":
     # Logging setup (basic for now)
     os.makedirs(config["save_dir"], exist_ok=True)
     os.makedirs(config["log_dir"], exist_ok=True)
-    # TODO: Setup TensorBoard writer
     episode_rewards = deque(maxlen=100) # Store last 100 episode rewards for averaging
     episode_lengths = deque(maxlen=100)
+    writer = SummaryWriter(log_dir=config["log_dir"]) # Initialize TensorBoard writer
     current_episode_reward = 0
     current_episode_length = 0
     start_time = time.time()
@@ -164,7 +166,7 @@ if __name__ == "__main__":
 
         # --- Update Agent --- #
         update_start_time = time.time()
-        agent.learn(buffer)
+        metrics = agent.learn(buffer)
         update_duration = time.time() - update_start_time
 
         # --- Logging --- #
@@ -180,6 +182,16 @@ if __name__ == "__main__":
             print(f"  Speed: Rollout FPS: {fps}, Update FPS: {update_fps}")
             print(f"  Total Time: {total_duration:.2f}s")
             # TODO: Add TensorBoard logging here (losses, entropy, KL, etc.)
+            writer.add_scalar("Charts/mean_episode_reward", mean_reward, global_step)
+            writer.add_scalar("Charts/mean_episode_length", mean_length, global_step)
+            writer.add_scalar("Speed/rollout_fps", fps, global_step)
+            writer.add_scalar("Speed/update_fps", update_fps, global_step)
+            writer.add_scalar("Loss/policy_loss", metrics["policy_loss"], global_step)
+            writer.add_scalar("Loss/value_loss", metrics["value_loss"], global_step)
+            writer.add_scalar("Loss/entropy_loss", metrics["entropy_loss"], global_step)
+            writer.add_scalar("Stats/approx_kl", metrics["approx_kl"], global_step)
+            writer.add_scalar("Stats/clip_fraction", metrics["clip_fraction"], global_step)
+            writer.add_scalar("Config/learning_rate", agent.lr, global_step) # Log learning rate if it changes
 
         # --- Saving --- #
         if num_rollouts % config["save_interval"] == 0:
@@ -199,4 +211,5 @@ if __name__ == "__main__":
             print(f"Model saved to {save_path}")
 
     print(f"Training finished after {global_step} timesteps.")
+    writer.close() # Close the TensorBoard writer
     env.close() 

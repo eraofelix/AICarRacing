@@ -160,3 +160,4 @@ cython_debug/
 #.idea/
 F1 World Championship Edition (Europe).sfc
 /models
+/logs

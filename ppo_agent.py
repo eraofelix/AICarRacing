@@ -200,14 +200,22 @@ class PPOAgent:
     def learn(self, rollout_buffer: RolloutBuffer):
         """
         Update the agent's networks using data from the rollout buffer.
+        Returns a dictionary of training metrics.
         """
         self.feature_extractor.train()
         self.actor.train()
         self.critic.train()
 
+        # Store metrics across epochs and batches
+        all_policy_losses = []
+        all_value_losses = []
+        all_entropy_losses = []
+        all_kl_divs = []
+        clip_fraction = []
+
         # Loop for optimization epochs
         for epoch in range(self.epochs):
-            approx_kl_divs = [] # For optional KL early stopping
+            epoch_kl_divs = [] # Track KL within this epoch for early stopping
             # Iterate over batches from the rollout buffer
             for batch in rollout_buffer.get_batches(self.batch_size):
                 obs_batch, actions_batch, old_log_probs_batch, advantages_batch, returns_batch = batch
@@ -222,22 +230,17 @@ class PPOAgent:
                 advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
 
                 # --- Calculate Actor (Policy) Loss --- #
-                # Ratio between new and old policy probabilities
                 ratio = torch.exp(log_probs - old_log_probs_batch)
-
-                # Clipped surrogate objective
                 policy_loss_1 = advantages_batch * ratio
                 policy_loss_2 = advantages_batch * torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
                 policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
                 # --------------------------------------- #
 
                 # --- Calculate Critic (Value) Loss --- #
-                # MSE between predicted values and calculated returns
                 value_loss = F.mse_loss(values, returns_batch)
                 # --------------------------------------- #
 
                 # --- Calculate Entropy Bonus --- #
-                # Encourage exploration; mean entropy over batch
                 entropy_loss = -torch.mean(entropy)
                 # ------------------------------- #
 
@@ -246,49 +249,60 @@ class PPOAgent:
                 # ---------------------- #
 
                 # --- Optimization Steps --- #
-                # Actor Update
                 self.actor_optimizer.zero_grad()
-                # Critic/Feature Extractor Update (separate loss calculation for clarity, though combined loss works too)
                 self.critic_optimizer.zero_grad()
-
                 loss.backward()
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    itertools.chain(self.critic.parameters(), self.feature_extractor.parameters()),
+                    self.max_grad_norm
+                )
 
-                # Gradient Clipping (avoids exploding gradients)
-                nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
-                nn.utils.clip_grad_norm_(itertools.chain(self.critic.parameters(), self.feature_extractor.parameters()), self.max_grad_norm)
-
+                # Apply gradients
                 self.actor_optimizer.step()
                 self.critic_optimizer.step()
-                # ------------------------ #
+                # -------------------------- #
 
-                # --- Track KL Divergence (Optional) --- #
-                # Approximate KL divergence between old and new policies
-                # Useful for debugging or early stopping
+                # --- Calculate additional metrics for logging --- #
                 with torch.no_grad():
                     log_ratio = log_probs - old_log_probs_batch
                     approx_kl = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
-                    approx_kl_divs.append(approx_kl)
-                # -------------------------------------- #
+                    clip_fraction.append(torch.mean((torch.abs(ratio - 1.0) > self.clip_epsilon).float()).cpu().numpy())
 
-            # --- Optional KL Early Stopping --- #
-            if self.target_kl is not None:
-                mean_kl = np.mean(approx_kl_divs)
-                if mean_kl > 1.5 * self.target_kl:
-                    print(f"  KL divergence ({mean_kl:.3f}) exceeded target ({self.target_kl:.3f}), stopping optimization early.")
-                    break
-            # ---------------------------------- #
+                # Store batch metrics
+                all_policy_losses.append(policy_loss.item())
+                all_value_losses.append(value_loss.item())
+                all_entropy_losses.append(entropy_loss.item())
+                all_kl_divs.append(approx_kl)
+                epoch_kl_divs.append(approx_kl) # Track KL for early stopping within this epoch
+                # -------------------------------------------- #
 
-        # --- TODO: Log metrics (losses, KL, entropy) --- #
-        # For monitoring training progress (e.g., using TensorBoard)
-        # Example:
-        # avg_policy_loss = ...
-        # avg_value_loss = ...
-        # avg_entropy = ...
-        # writer.add_scalar('loss/policy_loss', avg_policy_loss, global_step)
-        # writer.add_scalar('loss/value_loss', avg_value_loss, global_step)
-        # writer.add_scalar('rollout/entropy', avg_entropy, global_step)
-        # writer.add_scalar('train/approx_kl', np.mean(approx_kl_divs), global_step)
-        # ----------------------------------------------- #
+            # --- KL Divergence Check for Early Stopping (per epoch) --- #
+            epoch_mean_kl = np.mean(epoch_kl_divs)
+            if self.target_kl is not None and epoch_mean_kl > 1.5 * self.target_kl: # SB3 uses 1.5 * target_kl
+                print(f"Early stopping at epoch {epoch+1}/{self.epochs} due to reaching max KL divergence: {epoch_mean_kl:.4f} > {self.target_kl:.4f}")
+                break # Stop training epochs for this rollout
+            # ------------------------------------------------------------ #
+
+        # Calculate average metrics over all batches and epochs processed
+        avg_policy_loss = np.mean(all_policy_losses)
+        avg_value_loss = np.mean(all_value_losses)
+        avg_entropy_loss = np.mean(all_entropy_losses)
+        avg_approx_kl = np.mean(all_kl_divs)
+        # Need to compute clip fraction avg separately if early stopping happened
+        avg_clip_fraction = np.mean(clip_fraction) # Use last batch clip frac or avg across batches? Let's average.
+
+        return {
+            "policy_loss": avg_policy_loss,
+            "value_loss": avg_value_loss,
+            "entropy_loss": avg_entropy_loss,
+            "approx_kl": avg_approx_kl,
+            "clip_fraction": avg_clip_fraction,
+        }
+
+    def save(self, path: str):
+        pass # Placeholder for saving model state
 
 # Example Usage (minimal change, learn now has structure)
 if __name__ == '__main__':
