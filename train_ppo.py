@@ -103,14 +103,38 @@ if __name__ == "__main__":
     episode_rewards = deque(maxlen=100) # Store last 100 episode rewards for averaging
     episode_lengths = deque(maxlen=100)
     writer = SummaryWriter(log_dir=config["log_dir"]) # Initialize TensorBoard writer
+    best_mean_reward = -np.inf # Initialize best mean reward
     current_episode_reward = 0
     current_episode_length = 0
     start_time = time.time()
 
+    # --- Load Checkpoint if specified --- #
+    start_global_step = 0
+    start_num_rollouts = 0
+    if config["load_checkpoint_path"] and os.path.exists(config["load_checkpoint_path"]):
+        print(f"Loading checkpoint from: {config['load_checkpoint_path']}")
+        checkpoint = torch.load(config["load_checkpoint_path"], map_location=config["device"])
+
+        agent.feature_extractor.load_state_dict(checkpoint['feature_extractor_state_dict'])
+        agent.actor.load_state_dict(checkpoint['actor_state_dict'])
+        agent.critic.load_state_dict(checkpoint['critic_state_dict'])
+        agent.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
+        agent.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
+
+        start_global_step = checkpoint.get('global_step', 0)
+        start_num_rollouts = checkpoint.get('num_rollouts', 0)
+        best_mean_reward = checkpoint.get('best_mean_reward', -np.inf) # Load best reward
+
+        print(f"Resuming training from global_step={start_global_step}, num_rollouts={start_num_rollouts}")
+        print(f"Loaded best mean reward: {best_mean_reward:.2f}")
+    else:
+        print("No checkpoint found or specified, starting training from scratch.")
+
     # Initialize environment state
-    observation, info = env.reset(seed=config["seed"]) # Reset again after agent/buffer init?
-    global_step = 0
-    num_rollouts = 0
+    # Reset even if loading checkpoint to ensure consistent starting state for the next rollout
+    observation, info = env.reset(seed=config["seed"]) # Use initial seed
+    global_step = start_global_step
+    num_rollouts = start_num_rollouts
 
     print("Starting training...")
     while global_step < config["total_timesteps"]:
@@ -181,7 +205,7 @@ if __name__ == "__main__":
             print(f"  Stats (last 100 ep): Mean Reward: {mean_reward:.2f}, Mean Length: {mean_length:.1f}")
             print(f"  Speed: Rollout FPS: {fps}, Update FPS: {update_fps}")
             print(f"  Total Time: {total_duration:.2f}s")
-            # TODO: Add TensorBoard logging here (losses, entropy, KL, etc.)
+            # --- TensorBoard Logging --- #
             writer.add_scalar("Charts/mean_episode_reward", mean_reward, global_step)
             writer.add_scalar("Charts/mean_episode_length", mean_length, global_step)
             writer.add_scalar("Speed/rollout_fps", fps, global_step)
@@ -193,11 +217,26 @@ if __name__ == "__main__":
             writer.add_scalar("Stats/clip_fraction", metrics["clip_fraction"], global_step)
             writer.add_scalar("Config/learning_rate", agent.lr, global_step) # Log learning rate if it changes
 
-        # --- Saving --- #
-        if num_rollouts % config["save_interval"] == 0:
+            # --- Save Best Model --- #
+            if mean_reward > best_mean_reward:
+                best_mean_reward = mean_reward
+                best_save_path = os.path.join(config["save_dir"], "best_model.pth")
+                torch.save({
+                    'feature_extractor_state_dict': agent.feature_extractor.state_dict(),
+                    'actor_state_dict': agent.actor.state_dict(),
+                    'critic_state_dict': agent.critic.state_dict(),
+                    'actor_optimizer_state_dict': agent.actor_optimizer.state_dict(),
+                    'critic_optimizer_state_dict': agent.critic_optimizer.state_dict(),
+                    'global_step': global_step,
+                    'num_rollouts': num_rollouts,
+                    'best_mean_reward': best_mean_reward # Save best reward
+                }, best_save_path)
+                print(f"** New best model saved to {best_save_path} with mean reward: {best_mean_reward:.2f} **")
+
+        # --- Periodic Saving --- #
+        if num_rollouts % config["save_interval"] == 0 and num_rollouts > 0: # Avoid saving at rollout 0
             save_path = os.path.join(config["save_dir"], f"ppo_carracing_{global_step}.pth")
             # Save agent state (feature extractor, actor, critic, optimizers)
-            # Note: Saving optimizers is important for resuming training
             torch.save({
                 'feature_extractor_state_dict': agent.feature_extractor.state_dict(),
                 'actor_state_dict': agent.actor.state_dict(),
@@ -206,6 +245,7 @@ if __name__ == "__main__":
                 'critic_optimizer_state_dict': agent.critic_optimizer.state_dict(),
                 'global_step': global_step,
                 'num_rollouts': num_rollouts,
+                'best_mean_reward': best_mean_reward # Also save best reward here
                 # Optionally save buffer state if needed for exact resume
             }, save_path)
             print(f"Model saved to {save_path}")
