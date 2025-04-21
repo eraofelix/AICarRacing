@@ -19,8 +19,8 @@ config = {
     "seed": 42, # For reproducibility
 
     # Training settings
-    "total_timesteps": 1_000_000, # Total steps to train the agent
-    "learning_rate": 3e-4,
+    "total_timesteps": 5_000_000, # Total steps to train the agent (Increased from 1M)
+    "learning_rate": 3e-4, # Initial learning rate
     "buffer_size": 2048, # Steps collected per rollout before update
     "batch_size": 64,
     "ppo_epochs": 10, # Number of optimization epochs per rollout
@@ -188,6 +188,19 @@ if __name__ == "__main__":
 
         buffer.compute_returns_and_advantages(last_value, done)
 
+        # --- Update Learning Rate --- #
+        # Linear decay based on global steps
+        progress = global_step / config["total_timesteps"]
+        new_lr = agent.initial_lr * (1.0 - progress)
+        # Ensure non-negative LR
+        new_lr = max(new_lr, 0.0)
+        # Update LR in optimizers
+        for param_group in agent.actor_optimizer.param_groups:
+            param_group['lr'] = new_lr
+        for param_group in agent.critic_optimizer.param_groups:
+            param_group['lr'] = new_lr
+        agent.lr = new_lr # Update agent's current lr tracker
+
         # --- Update Agent --- #
         update_start_time = time.time()
         metrics = agent.learn(buffer)
@@ -215,7 +228,7 @@ if __name__ == "__main__":
             writer.add_scalar("Loss/entropy_loss", metrics["entropy_loss"], global_step)
             writer.add_scalar("Stats/approx_kl", metrics["approx_kl"], global_step)
             writer.add_scalar("Stats/clip_fraction", metrics["clip_fraction"], global_step)
-            writer.add_scalar("Config/learning_rate", agent.lr, global_step) # Log learning rate if it changes
+            writer.add_scalar("Config/learning_rate", new_lr, global_step) # Log scheduled learning rate
 
             # --- Save Best Model --- #
             if mean_reward > best_mean_reward:

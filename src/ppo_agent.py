@@ -138,7 +138,8 @@ class PPOAgent:
         self.observation_space = observation_space
         self.action_space = action_space
         self.action_dim = action_space.shape[0]
-        self.lr = lr
+        self.initial_lr = lr # Store initial learning rate
+        self.lr = lr # Current learning rate (will be updated by schedule)
         self.gamma = gamma
         self.gae_lambda = gae_lambda # Store for potential use in buffer
         self.clip_epsilon = clip_epsilon
@@ -160,10 +161,10 @@ class PPOAgent:
         self.critic = Critic(features_dim).to(self.device)
 
         # Optimizers
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr, eps=1e-5)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=self.lr, eps=1e-5)
         self.critic_optimizer = optim.Adam(
             itertools.chain(self.critic.parameters(), self.feature_extractor.parameters()),
-            lr=lr, eps=1e-5 # Add eps for stability like SB3
+            lr=self.lr, eps=1e-5 # Add eps for stability like SB3
         )
 
         print(f"PPO Agent initialized on device: {self.device}")
