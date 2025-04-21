@@ -7,7 +7,7 @@ import numpy as np
 import itertools # For chaining parameters
 
 # Assuming cnn_model.py and env_wrappers.py are in the same directory or accessible
-from cnn_model import CNNFeatureExtractor
+from .cnn_model import CNNFeatureExtractor
 from gymnasium import spaces # For type hinting
 # We'll need a RolloutBuffer eventually, define a placeholder for type hinting
 from typing import Generator, Tuple, Optional
@@ -310,7 +310,7 @@ if __name__ == '__main__':
     import gymnasium as gym
     # Need env_wrappers for this test
     try:
-        from env_wrappers import GrayScaleObservation, FrameStack
+        from .env_wrappers import GrayScaleObservation, FrameStack
     except ImportError:
         print("env_wrappers.py not found, skipping agent test.")
         exit()
