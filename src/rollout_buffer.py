@@ -12,11 +12,15 @@ class RolloutBuffer:
                  buffer_size: int,
                  observation_space: spaces.Box,
                  action_space: spaces.Box,
+                 num_envs: int,
                  gamma: float = 0.99,
                  gae_lambda: float = 0.95,
                  device: str = 'cpu'):
 
         self.buffer_size = buffer_size
+        self.num_envs = num_envs
+        self.total_buffer_size = buffer_size * num_envs
+
         self.obs_shape = observation_space.shape
         self.action_dim = action_space.shape[0]
         self.gamma = gamma
@@ -26,15 +30,15 @@ class RolloutBuffer:
         # Ensure observation space is what we expect from wrappers (k, H, W)
         assert len(self.obs_shape) == 3, f"Expected obs shape (k, H, W), got {self.obs_shape}"
 
-        # Pre-allocate NumPy arrays for efficiency
-        self.observations = np.zeros((self.buffer_size,) + self.obs_shape, dtype=observation_space.dtype)
-        self.actions = np.zeros((self.buffer_size, self.action_dim), dtype=action_space.dtype)
-        self.rewards = np.zeros((self.buffer_size,), dtype=np.float32)
-        self.dones = np.zeros((self.buffer_size,), dtype=np.float32) # Use float for calculations
-        self.values = np.zeros((self.buffer_size,), dtype=np.float32)
-        self.log_probs = np.zeros((self.buffer_size,), dtype=np.float32)
-        self.advantages = np.zeros((self.buffer_size,), dtype=np.float32)
-        self.returns = np.zeros((self.buffer_size,), dtype=np.float32)
+        # Pre-allocate NumPy arrays for efficiency (total size across envs)
+        self.observations = np.zeros((self.buffer_size, self.num_envs) + self.obs_shape, dtype=observation_space.dtype)
+        self.actions = np.zeros((self.buffer_size, self.num_envs, self.action_dim), dtype=action_space.dtype)
+        self.rewards = np.zeros((self.buffer_size, self.num_envs), dtype=np.float32)
+        self.dones = np.zeros((self.buffer_size, self.num_envs), dtype=np.float32)
+        self.values = np.zeros((self.buffer_size, self.num_envs), dtype=np.float32)
+        self.log_probs = np.zeros((self.buffer_size, self.num_envs), dtype=np.float32)
+        self.advantages = np.zeros((self.buffer_size, self.num_envs), dtype=np.float32)
+        self.returns = np.zeros((self.buffer_size, self.num_envs), dtype=np.float32)
 
         self.pos = 0
         self.full = False
@@ -42,20 +46,20 @@ class RolloutBuffer:
     def add(self,
             obs: np.ndarray,
             action: np.ndarray,
-            reward: float,
-            done: bool,
-            value: float,
-            log_prob: float):
-        """Add a transition to the buffer."""
-        if len(log_prob.shape) > 0: # Ensure log_prob is scalar
-           log_prob = log_prob.item()
-        if len(value.shape) > 0: # Ensure value is scalar
-            value = value.item()
+            reward: np.ndarray,
+            terminated: np.ndarray,
+            truncated: np.ndarray,
+            value: np.ndarray,
+            log_prob: np.ndarray):
+        """Add transitions from all parallel environments to the buffer."""
+        # Data is expected to be of shape (num_envs, ...) for most inputs
+        # Check shapes if needed (e.g., assert obs.shape[0] == self.num_envs)
 
+        # Store data for all envs at the current position
         self.observations[self.pos] = obs
         self.actions[self.pos] = action
         self.rewards[self.pos] = reward
-        self.dones[self.pos] = float(done)
+        self.dones[self.pos] = (terminated | truncated).astype(np.float32) # Combine flags
         self.values[self.pos] = value
         self.log_probs[self.pos] = log_prob
 
@@ -64,32 +68,38 @@ class RolloutBuffer:
             self.full = True
             self.pos = 0 # Wrap around
 
-    def compute_returns_and_advantages(self, last_value: float, last_done: bool):
+    def compute_returns_and_advantages(self, last_values: np.ndarray, last_dones: np.ndarray):
         """
         Compute returns and advantages using GAE after a rollout is finished.
+        Handles multiple environments.
 
-        :param last_value: Value estimate of the state after the last step in the rollout.
-        :param last_done: Whether the episode terminated after the last step.
+        :param last_values: Value estimate of the last state for each environment. Shape (num_envs,)
+        :param last_dones: Whether each environment terminated/truncated at the last step. Shape (num_envs,)
         """
-        last_value = last_value.item() if isinstance(last_value, np.ndarray) and last_value.ndim > 0 else last_value
+        # Ensure shapes are correct
+        assert last_values.shape == (self.num_envs,), f"Expected last_values shape {(self.num_envs,)}, got {last_values.shape}"
+        assert last_dones.shape == (self.num_envs,), f"Expected last_dones shape {(self.num_envs,)}, got {last_dones.shape}"
+
+        # last_value = last_value.item() if isinstance(last_value, np.ndarray) and last_value.ndim > 0 else last_value
         last_gae_lam = 0
-        # Iterate backwards through the buffer
+        # Iterate backwards through the buffer steps
         for step in reversed(range(self.buffer_size)):
             if step == self.buffer_size - 1:
-                next_non_terminal = 1.0 - float(last_done)
-                next_values = last_value
+                next_non_terminal = 1.0 - last_dones.astype(np.float32)
+                next_values = last_values
             else:
                 next_non_terminal = 1.0 - self.dones[step + 1]
                 next_values = self.values[step + 1]
 
-            # Calculate the TD error (delta)
+            # Calculate the TD error (delta) for all envs
             delta = self.rewards[step] + self.gamma * next_values * next_non_terminal - self.values[step]
 
-            # Calculate the GAE advantage
+            # Calculate the GAE advantage for all envs
             last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
             self.advantages[step] = last_gae_lam
 
         # Calculate the returns (TD(lambda) estimate)
+        # Should broadcast correctly: advantages (buffer_size, num_envs), values (buffer_size, num_envs)
         self.returns = self.advantages + self.values
 
     def get_batches(self, batch_size: int) -> Generator[Tuple[torch.Tensor, ...], None, None]:
@@ -100,17 +110,24 @@ class RolloutBuffer:
         :return: A generator yielding tuples of tensors:
                  (observations, actions, old_log_probs, advantages, returns)
         """
-        # Determine number of samples currently stored
-        num_samples = self.buffer_size if self.full else self.pos
-        indices = np.random.permutation(num_samples)
+        # Determine number of valid steps stored per environment
+        steps_to_use = self.buffer_size if self.full else self.pos
+        # Total number of samples across all envs and steps
+        num_samples = steps_to_use * self.num_envs
 
-        # Flatten data (remove time dimension, each step is a sample)
-        # No need to flatten observations as CNN expects (k, H, W)
-        observations = self.observations[:num_samples]
-        actions = self.actions[:num_samples]
-        old_log_probs = self.log_probs[:num_samples]
-        advantages = self.advantages[:num_samples]
-        returns = self.returns[:num_samples]
+        # If buffer is empty, return nothing (shouldn't happen in normal PPO loop)
+        if num_samples == 0:
+            return
+
+        # Flatten data across environments and steps before shuffling
+        # Use steps_to_use for slicing
+        observations = self.observations[:steps_to_use].reshape((-1,) + self.obs_shape)
+        actions = self.actions[:steps_to_use].reshape((-1, self.action_dim))
+        old_log_probs = self.log_probs[:steps_to_use].reshape(-1)
+        advantages = self.advantages[:steps_to_use].reshape(-1)
+        returns = self.returns[:steps_to_use].reshape(-1)
+
+        indices = np.random.permutation(num_samples)
 
         start_idx = 0
         while start_idx < num_samples:
@@ -130,7 +147,7 @@ class RolloutBuffer:
 
     def size(self) -> int:
         """Returns the number of elements currently stored in the buffer."""
-        return self.buffer_size if self.full else self.pos
+        return self.total_buffer_size if self.full else self.pos * self.num_envs
 
 # Example Usage (Conceptual)
 if __name__ == '__main__':
@@ -144,26 +161,27 @@ if __name__ == '__main__':
     buffer_sz = 2048
     batch_sz = 64
 
-    buffer = RolloutBuffer(buffer_size=buffer_sz, observation_space=obs_space, action_space=act_space)
+    buffer = RolloutBuffer(buffer_size=buffer_sz, observation_space=obs_space, action_space=act_space, num_envs=1)
 
     print(f"Buffer initialized. Size: {buffer.size()}")
 
     # Simulate adding data (normally from agent interaction)
     dummy_obs = obs_space.sample()
     dummy_action = act_space.sample()
-    dummy_reward = 0.5
-    dummy_done = False
+    dummy_reward = np.array([0.5])
+    dummy_terminated = np.array([False])
+    dummy_truncated = np.array([False])
     dummy_value = np.array([0.1]) # Example value from critic
     dummy_log_prob = np.array([-0.5]) # Example log_prob from actor
 
     for i in range(buffer_sz + 10): # Fill buffer and wrap around a bit
-        buffer.add(dummy_obs, dummy_action, dummy_reward, i % 100 == 0, dummy_value, dummy_log_prob)
+        buffer.add(dummy_obs, dummy_action, dummy_reward, dummy_terminated, dummy_truncated, dummy_value, dummy_log_prob)
 
     print(f"Buffer after adding data. Size: {buffer.size()}, Pos: {buffer.pos}, Full: {buffer.full}")
 
     # Simulate computing returns/advantages
     last_val = np.array([0.05])
-    last_done = True
+    last_done = np.array([True])
     buffer.compute_returns_and_advantages(last_val, last_done)
     print("Computed returns and advantages.")
     print(f"Sample Advantages: {buffer.advantages[:5]}...")

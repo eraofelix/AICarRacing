@@ -183,7 +183,11 @@ class PPOAgent:
         self.actor.eval()
         self.critic.eval() # Critic also needed for value estimate during rollout
 
-        observation_tensor = torch.as_tensor(observation, dtype=torch.float32).unsqueeze(0).to(self.device)
+        # observation_tensor = torch.as_tensor(observation, dtype=torch.float32).unsqueeze(0).to(self.device)
+        # Handle batch of observations directly
+        observation_tensor = torch.as_tensor(observation, dtype=torch.float32).to(self.device)
+        # If observation is already a tensor (e.g., from buffer), ensure correct device
+        # observation_tensor = observation.to(self.device)
 
         with torch.no_grad():
             features = self.feature_extractor(observation_tensor)
@@ -192,9 +196,13 @@ class PPOAgent:
             action = action_dist.sample()
             log_prob = action_dist.log_prob(action).sum(axis=-1)
 
-        action_np = action.detach().cpu().numpy().squeeze(0)
-        value_np = value.detach().cpu().numpy().squeeze(0)
-        log_prob_np = log_prob.detach().cpu().numpy().squeeze(0)
+        # action_np = action.detach().cpu().numpy().squeeze(0)
+        # value_np = value.detach().cpu().numpy().squeeze(0)
+        # log_prob_np = log_prob.detach().cpu().numpy().squeeze(0)
+        # Return batches
+        action_np = action.detach().cpu().numpy()
+        value_np = value.detach().cpu().numpy()
+        log_prob_np = log_prob.detach().cpu().numpy()
 
         return action_np, value_np, log_prob_np
 
