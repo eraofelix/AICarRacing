@@ -44,9 +44,17 @@ This document tracks the development steps for creating a Reinforcement Learning
     *   Implemented `compute_returns_and_advantages` using GAE.
     *   Implemented `get_batches` generator for shuffling and yielding mini-batches as tensors.
     *   Tested buffer functionality with dummy data.
+8.  **Training Script Enhancement (2024-08-01):**
+    *   Created initial `train_ppo.py` script structure with config, env setup, agent/buffer creation, and basic training loop.
+    *   Updated `PPOAgent.learn` to return detailed training metrics (losses, KL, clip fraction).
+    *   Added TensorBoard logging using `SummaryWriter` in `train_ppo.py` for episode stats and agent metrics.
+    *   Added `load_checkpoint_path` config option and implemented logic to load checkpoints (model/optimizer state, step counts, best reward).
+    *   Implemented saving of the best model (`best_model.pth`) based on achieving a new highest mean episode reward.
+    *   Updated periodic checkpoint saving to include the current best mean reward.
 
 ## Next Steps
 
-*   Develop the main training script (`train_ppo.py`).
+*   Develop the main training script (`train_ppo.py`) **(Partially completed)**.
 *   Develop an evaluation script (`evaluate_agent.py`).
-*   Implement logging (e.g., TensorBoard) in the training script and potentially `PPOAgent.learn`. 
+*   Refine hyperparameters and training stability.
+*   Potentially implement learning rate scheduling. 
