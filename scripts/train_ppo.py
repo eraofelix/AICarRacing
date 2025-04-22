@@ -51,7 +51,7 @@ config = {
     "save_interval": 10, # Save model every N rollouts
     "save_dir": "./models/ppo_carracing",
     "log_dir": "./logs/ppo_carracing",
-    "load_checkpoint_path": "./models/ppo_carracing/ppo_carracing_614400.pth", # Set to None to train from scratch
+    "load_checkpoint_path": "./models/ppo_carracing/ppo_carracing_1105920.pth", # Set to None to train from scratch
     # TODO: Implement Observation Normalization
 
     # Hardware
