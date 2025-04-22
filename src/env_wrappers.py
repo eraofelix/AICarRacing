@@ -26,6 +26,30 @@ class GrayScaleObservation(gym.ObservationWrapper):
         # obs = np.expand_dims(obs, -1)
         return obs
 
+class TimeLimit(gym.Wrapper):
+    """
+    Limits the episode length to a specified number of steps.
+    Applies on top of the environment's own time limit.
+    """
+    def __init__(self, env, max_episode_steps=1000):
+        super().__init__(env)
+        self._max_episode_steps = max_episode_steps
+        self._elapsed_steps = 0
+
+    def reset(self, **kwargs):
+        self._elapsed_steps = 0
+        return self.env.reset(**kwargs)
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        self._elapsed_steps += 1
+        
+        # Truncate if we've reached the step limit
+        if self._elapsed_steps >= self._max_episode_steps:
+            truncated = True
+            
+        return observation, reward, terminated, truncated, info
+
 class FrameStack(gym.ObservationWrapper):
     """
     Stack k last frames.
@@ -82,6 +106,10 @@ if __name__ == '__main__':
     # Apply wrappers
     env = GrayScaleObservation(env)
     print(f"After Grayscale: {env.observation_space}")
+
+    # Add time limit - 400 steps is reasonable for CarRacing
+    env = TimeLimit(env, max_episode_steps=400)
+    print("Applied TimeLimit wrapper with 400 max steps")
 
     num_stack = 4
     env = FrameStack(env, num_stack)

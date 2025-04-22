@@ -8,7 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 import gymnasium.vector # Added for vectorized environments
 
 # Import custom modules
-from src.env_wrappers import GrayScaleObservation, FrameStack # Ensure 'src.' prefix
+from src.env_wrappers import GrayScaleObservation, FrameStack, TimeLimit # Added TimeLimit import
 from src.ppo_agent import PPOAgent                     # Ensure 'src.' prefix
 from src.rollout_buffer import RolloutBuffer             # Ensure 'src.' prefix
 
@@ -18,12 +18,13 @@ config = {
     "env_id": "CarRacing-v3",
     "frame_stack": 4,
     "seed": 42, # For reproducibility
-    "num_envs": 4, # Number of parallel environments
+    "num_envs": 8, # Number of parallel environments
+    "max_episode_steps": 400, # Added max episode steps config
 
     # Training settings
     "total_timesteps": 5_000_000, # Total steps to train the agent
     "learning_rate": 3e-5, # Initial learning rate (Lowered further)
-    "buffer_size": 2048, # TOTAL steps per rollout across all envs
+    "buffer_size": 4096, # TOTAL steps per rollout across all envs
     "batch_size": 64,
     "ppo_epochs": 4, # Number of optimization epochs per rollout (Reduced)
     "gamma": 0.99,
@@ -40,7 +41,7 @@ config = {
     "save_interval": 10, # Save model every N rollouts
     "save_dir": "./models/ppo_carracing",
     "log_dir": "./logs/ppo_carracing",
-    "load_checkpoint_path": None, # Set to None to train from scratch
+    "load_checkpoint_path": "./models/ppo_carracing/ppo_carracing_163840.pth", # Set to None to train from scratch
     # TODO: Implement Observation Normalization
 
     # Hardware
@@ -55,7 +56,7 @@ def set_seeds(seed):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
-def make_env(env_id, seed, frame_stack):
+def make_env(env_id, seed, frame_stack, max_episode_steps):
     """Helper function that returns a function to create and wrap a single environment instance."""
     def _init():
         # Derive a unique seed for this process to ensure envs are different
@@ -65,6 +66,7 @@ def make_env(env_id, seed, frame_stack):
         env.reset(seed=process_seed)
         env.action_space.seed(process_seed)
         env = GrayScaleObservation(env)
+        env = TimeLimit(env, max_episode_steps=max_episode_steps)  # Add custom time limit
         env = FrameStack(env, frame_stack)
         # No need to reset again after FrameStack usually
         return env
@@ -78,10 +80,12 @@ if __name__ == "__main__":
 
     # Create vectorized environment FIRST
     print(f"Creating {config['num_envs']} parallel environments...")
-    env_fns = [make_env(config["env_id"], config["seed"] + i, config["frame_stack"]) for i in range(config["num_envs"])]
+    env_fns = [make_env(config["env_id"], config["seed"] + i, config["frame_stack"], config["max_episode_steps"]) 
+              for i in range(config["num_envs"])]
     env = gymnasium.vector.AsyncVectorEnv(env_fns)
     print(f"Observation Space: {env.single_observation_space}")
     print(f"Action Space: {env.single_action_space}")
+    print(f"Using TimeLimit wrapper with {config['max_episode_steps']} max steps per episode")
 
     # Create Agent - Use attributes from the vector env
     agent = PPOAgent(env.single_observation_space,
@@ -172,6 +176,10 @@ if __name__ == "__main__":
 
         for step in range(steps_per_rollout_per_env):
             step_global_step = global_step + step * config["num_envs"] # Estimate step for LR schedule
+            
+            # Add step counter for debugging
+            if step % 50 == 0:
+                print(f"Collecting step {step}/{steps_per_rollout_per_env}, timestep: {global_step}")
 
             # --- Update Learning Rate --- #
             progress = step_global_step / config["total_timesteps"]
@@ -188,7 +196,14 @@ if __name__ == "__main__":
 
             # Step environment
             next_observations, rewards, terminateds, truncateds, infos = env.step(actions)
-
+            
+            # Debug prints to check if episodes are terminating/truncating
+            if any(terminateds) or any(truncateds):
+                term_indices = np.where(terminateds)[0]
+                trunc_indices = np.where(truncateds)[0]
+                print(f"Step {step}: Terminated envs: {term_indices}, Truncated envs: {trunc_indices}")
+                print(f"Info keys: {infos.keys()}")
+            
             # Update episode trackers
             current_episode_rewards_vec += rewards
             current_episode_lengths_vec += 1
@@ -204,17 +219,37 @@ if __name__ == "__main__":
             # Check for finished episodes using final_info (Gymnasium >= 0.26)
             if "_final_info" in infos:
                 finished_mask = infos["_final_info"]
+                if any(finished_mask):
+                    print(f"Found finished episodes at indices: {np.where(finished_mask)[0]}")
+                    
                 final_infos = infos["final_info"][finished_mask]
                 for idx, final_info in enumerate(final_infos):
+                    print(f"Processing final_info for idx {idx}: {final_info}")
                     if final_info is not None and "episode" in final_info:
                         ep_rew = final_info["episode"]["r"]
                         ep_len = final_info["episode"]["l"]
                         episode_rewards.append(ep_rew)
                         episode_lengths.append(ep_len)
+                        # Add episode completion tracking
+                        print(f"Detected episode completion. Rewards: {ep_rew:.2f}, Length: {ep_len}")
                         # Find original index and reset trackers
                         original_env_index = np.where(finished_mask)[0][idx]
                         current_episode_rewards_vec[original_env_index] = 0
                         current_episode_lengths_vec[original_env_index] = 0
+            elif any(terminateds) or any(truncateds):
+                # If _final_info is missing but episodes are ending, manually track them
+                print("WARNING: Episodes finished but no _final_info in infos. Manual tracking needed.")
+                for i in range(config["num_envs"]):
+                    if terminateds[i] or truncateds[i]:
+                        # Manually track episode stats
+                        ep_reward = current_episode_rewards_vec[i]
+                        ep_length = current_episode_lengths_vec[i]
+                        episode_rewards.append(ep_reward)
+                        episode_lengths.append(ep_length)
+                        print(f"Manual episode tracking: Env {i}, Reward: {ep_reward:.2f}, Length: {ep_length}")
+                        # Reset trackers
+                        current_episode_rewards_vec[i] = 0
+                        current_episode_lengths_vec[i] = 0
 
             # Update global step count AFTER processing step data
             global_step += config["num_envs"]
