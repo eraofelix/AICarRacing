@@ -20,6 +20,16 @@ config = {
     "seed": 42, # For reproducibility
     "num_envs": 8, # Number of parallel environments
     "max_episode_steps": 400, # Added max episode steps config
+    
+    # Dynamic episode length config
+    "dynamic_episode_length": True, # Enable/disable dynamic episode length adjustment
+    "episode_length_thresholds": {  # Map of mean reward threshold -> new episode length
+        200: 500,  # At mean reward 200, increase to 500 steps
+        400: 700,  # At mean reward 400, increase to 700 steps
+        600: 900,  # At mean reward 600, increase to 900 steps
+        800: 1000, # At mean reward 800, increase to 1000 steps
+    },
+    "last_length_update_reward": 0,  # Track the last threshold that triggered an update
 
     # Training settings
     "total_timesteps": 5_000_000, # Total steps to train the agent
@@ -41,7 +51,7 @@ config = {
     "save_interval": 10, # Save model every N rollouts
     "save_dir": "./models/ppo_carracing",
     "log_dir": "./logs/ppo_carracing",
-    "load_checkpoint_path": "./models/ppo_carracing/ppo_carracing_163840.pth", # Set to None to train from scratch
+    "load_checkpoint_path": "./models/ppo_carracing/ppo_carracing_614400.pth", # Set to None to train from scratch
     # TODO: Implement Observation Normalization
 
     # Hardware
@@ -141,6 +151,22 @@ if __name__ == "__main__":
             start_global_step = checkpoint.get('global_step', 0)
             start_num_rollouts = checkpoint.get('num_rollouts', 0)
             best_mean_reward = checkpoint.get('best_mean_reward', -np.inf)
+            
+            # Restore saved config if available
+            if 'config' in checkpoint:
+                saved_config = checkpoint['config']
+                if 'max_episode_steps' in saved_config:
+                    config['max_episode_steps'] = saved_config['max_episode_steps']
+                    print(f"Loaded max_episode_steps: {config['max_episode_steps']}")
+                if 'last_length_update_reward' in saved_config:
+                    config['last_length_update_reward'] = saved_config['last_length_update_reward']
+                    print(f"Loaded last_length_update_reward: {config['last_length_update_reward']}")
+                # Make sure we create environments with the loaded max_episode_steps
+                env.close()
+                env_fns = [make_env(config["env_id"], config["seed"] + i, config["frame_stack"], config["max_episode_steps"]) 
+                          for i in range(config["num_envs"])]
+                env = gymnasium.vector.AsyncVectorEnv(env_fns)
+                print(f"Recreated environments with loaded max_episode_steps: {config['max_episode_steps']}")
 
             print(f"Resuming training from global_step={start_global_step}, num_rollouts={start_num_rollouts}")
             print(f"Loaded best mean reward: {best_mean_reward:.2f}")
@@ -290,6 +316,7 @@ if __name__ == "__main__":
             print(f"  Speed: Rollout FPS: {fps}, Update FPS: {update_fps}")
             print(f"  Total Time: {total_duration:.2f}s")
             print(f"  LR: {new_lr:.2e}") # Print current LR
+            print(f"  Current max_episode_steps: {config['max_episode_steps']}")
 
             # TensorBoard Logging
             writer.add_scalar("Charts/mean_episode_reward", mean_reward, global_step)
@@ -302,6 +329,7 @@ if __name__ == "__main__":
             writer.add_scalar("Stats/approx_kl", metrics["approx_kl"], global_step)
             writer.add_scalar("Stats/clip_fraction", metrics["clip_fraction"], global_step)
             writer.add_scalar("Config/learning_rate", new_lr, global_step)
+            writer.add_scalar("Config/max_episode_steps", config["max_episode_steps"], global_step)
 
             # --- Save Best Model --- #
             if mean_reward > best_mean_reward:
@@ -316,7 +344,8 @@ if __name__ == "__main__":
                         'critic_optimizer_state_dict': agent.critic_optimizer.state_dict(),
                         'global_step': global_step,
                         'num_rollouts': num_rollouts,
-                        'best_mean_reward': best_mean_reward
+                        'best_mean_reward': best_mean_reward,
+                        'config': config  # Save the current config with episode length
                     }, best_save_path)
                     print(f"** New best model saved to {best_save_path} with mean reward: {best_mean_reward:.2f} **")
                 except Exception as e:
@@ -337,11 +366,44 @@ if __name__ == "__main__":
                     'critic_optimizer_state_dict': agent.critic_optimizer.state_dict(),
                     'global_step': global_step,
                     'num_rollouts': num_rollouts,
-                    'best_mean_reward': best_mean_reward
+                    'best_mean_reward': best_mean_reward,
+                    'config': config  # Save the current config with episode length
                 }, save_path)
                 print(f"Model saved to {save_path}")
             except Exception as e:
                 print(f"Error saving periodic checkpoint: {e}")
+
+        # --- Dynamic Episode Length Adjustment --- #
+        if config["dynamic_episode_length"] and len(episode_rewards) > 0:
+            for threshold, new_length in sorted(config["episode_length_thresholds"].items()):
+                # Check if we've crossed a threshold and haven't updated for this threshold yet
+                if mean_reward >= threshold and threshold > config["last_length_update_reward"]:
+                    old_max_steps = config["max_episode_steps"]
+                    config["max_episode_steps"] = new_length
+                    config["last_length_update_reward"] = threshold
+                    
+                    print(f"\n==== DYNAMIC EPISODE LENGTH UPDATE ====")
+                    print(f"Mean reward {mean_reward:.2f} has reached threshold {threshold}")
+                    print(f"Increasing max_episode_steps from {old_max_steps} to {new_length}")
+                    
+                    # Close old environments and create new ones with updated episode length
+                    env.close()
+                    env_fns = [make_env(config["env_id"], config["seed"] + i, config["frame_stack"], config["max_episode_steps"]) 
+                              for i in range(config["num_envs"])]
+                    env = gymnasium.vector.AsyncVectorEnv(env_fns)
+                    
+                    # Reset environment and episode tracking variables
+                    observations, infos = env.reset(seed=config["seed"])
+                    current_episode_rewards_vec = np.zeros(config["num_envs"], dtype=np.float32)
+                    current_episode_lengths_vec = np.zeros(config["num_envs"], dtype=np.int32)
+                    
+                    # Log the change
+                    writer.add_scalar("Config/max_episode_steps", config["max_episode_steps"], global_step)
+                    writer.add_text("Events", f"Increased episode length to {new_length} at reward {mean_reward:.2f}", global_step)
+                    
+                    print(f"Environment reset with new max episode length: {config['max_episode_steps']}")
+                    print(f"====================================\n")
+                    break  # Only apply one threshold update at a time
 
     print(f"Training finished after {global_step} timesteps.")
     writer.close() # Close the TensorBoard writer
