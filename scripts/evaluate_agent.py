@@ -3,11 +3,10 @@ import torch
 import numpy as np
 import os
 import time
-import argparse # To specify model path easily
+import argparse
 
-# Import custom modules
 from src.env_wrappers import GrayScaleObservation, FrameStack
-from src.ppo_agent import PPOAgent # Assuming PPOAgent has load functionality or we load state dicts
+from src.ppo_agent import PPOAgent
 
 # --- Configuration --- #
 # Most settings should match the training config the model was trained with

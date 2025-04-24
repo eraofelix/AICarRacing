@@ -27,10 +27,9 @@ class RolloutBuffer:
         self.gae_lambda = gae_lambda
         self.device = torch.device(device)
 
-        # Ensure observation space is what we expect from wrappers (k, H, W)
         assert len(self.obs_shape) == 3, f"Expected obs shape (k, H, W), got {self.obs_shape}"
 
-        # Pre-allocate NumPy arrays for efficiency (total size across envs)
+        # Pre-allocate NumPy arrays for efficiency
         self.observations = np.zeros((self.buffer_size, self.num_envs) + self.obs_shape, dtype=observation_space.dtype)
         self.actions = np.zeros((self.buffer_size, self.num_envs, self.action_dim), dtype=action_space.dtype)
         self.rewards = np.zeros((self.buffer_size, self.num_envs), dtype=np.float32)
@@ -39,7 +38,6 @@ class RolloutBuffer:
         self.log_probs = np.zeros((self.buffer_size, self.num_envs), dtype=np.float32)
         self.advantages = np.zeros((self.buffer_size, self.num_envs), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.num_envs), dtype=np.float32)
-        # Episode tracking for better trajectory handling
         self.episode_starts = np.ones((self.buffer_size, self.num_envs), dtype=np.float32)
 
         self.pos = 0
@@ -54,27 +52,23 @@ class RolloutBuffer:
             value: np.ndarray,
             log_prob: np.ndarray):
         """Add transitions from all parallel environments to the buffer."""
-        # Data is expected to be of shape (num_envs, ...) for most inputs
-        # Check shapes if needed (e.g., assert obs.shape[0] == self.num_envs)
-
-        # Store data for all envs at the current position
         self.observations[self.pos] = obs
         self.actions[self.pos] = action
-        self.rewards[self.pos] = np.clip(reward, -10.0, 10.0)  # Clip rewards for numerical stability
-        self.dones[self.pos] = (terminated | truncated).astype(np.float32) # Combine flags
+        self.rewards[self.pos] = np.clip(reward, -10.0, 10.0)
+        self.dones[self.pos] = (terminated | truncated).astype(np.float32)
         self.values[self.pos] = value
         self.log_probs[self.pos] = log_prob
         
-        # Handle episode starts (first step or after done)
+        # Handle episode starts
         if self.pos > 0:
             self.episode_starts[self.pos] = self.dones[self.pos - 1]
         else:
-            self.episode_starts[self.pos] = 1.0  # First step is always start of episode
+            self.episode_starts[self.pos] = 1.0
 
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
-            self.pos = 0 # Wrap around
+            self.pos = 0
 
     def compute_returns_and_advantages(self, last_values: np.ndarray, last_dones: np.ndarray):
         """
@@ -84,11 +78,9 @@ class RolloutBuffer:
         :param last_values: Value estimate of the last state for each environment. Shape (num_envs,)
         :param last_dones: Whether each environment terminated/truncated at the last step. Shape (num_envs,)
         """
-        # Ensure shapes are correct
         assert last_values.shape == (self.num_envs,), f"Expected last_values shape {(self.num_envs,)}, got {last_values.shape}"
         assert last_dones.shape == (self.num_envs,), f"Expected last_dones shape {(self.num_envs,)}, got {last_dones.shape}"
 
-        # Initialize last_gae_lam for each environment
         last_gae_lam = np.zeros(self.num_envs, dtype=np.float32)
         
         # Iterate backwards through the buffer steps
@@ -103,20 +95,18 @@ class RolloutBuffer:
             # Calculate the TD error (delta) for all envs
             delta = self.rewards[step] + self.gamma * next_values * next_non_terminal - self.values[step]
 
-            # Calculate the GAE advantage for all envs
-            # Properly reset advantage calculation at episode boundaries
+            # Calculate the GAE advantage
             last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
             self.advantages[step] = last_gae_lam
 
         # Calculate the returns (value targets)
         self.returns = self.advantages + self.values
         
-        # Special handling for episode boundaries: ensure proper bootstrapping
+        # Special handling for episode boundaries
         for env_idx in range(self.num_envs):
             for step in range(self.buffer_size):
                 if self.episode_starts[step, env_idx]:
                     # At episode start, reset advantage calculation
-                    # This prevents leaking value estimates across episodes
                     if step > 0:
                         self.advantages[step-1, env_idx] = self.returns[step-1, env_idx] - self.values[step-1, env_idx]
 
@@ -129,20 +119,15 @@ class RolloutBuffer:
         :return: A generator yielding tuples of tensors:
                  (observations, actions, old_log_probs, advantages, returns)
         """
-        # Determine number of valid steps stored per environment
         steps_to_use = self.buffer_size if self.full else self.pos
-        # Total number of samples across all envs and steps
         num_samples = steps_to_use * self.num_envs
 
-        # If buffer is empty, return nothing (shouldn't happen in normal PPO loop)
         if num_samples == 0:
             return
 
         # Normalize advantages globally across all environments
-        # This ensures consistent updates regardless of which environments have bigger/smaller advantages
-        all_advantages = self.advantages[:steps_to_use].reshape(-1)  # Flatten across all envs
+        all_advantages = self.advantages[:steps_to_use].reshape(-1)
         if len(all_advantages) > 0 and all_advantages.std() > 0:
-            # Global normalization
             adv_mean = all_advantages.mean()
             adv_std = all_advantages.std()
             normalized_advantages = (self.advantages[:steps_to_use] - adv_mean) / (adv_std + 1e-8)
@@ -160,7 +145,6 @@ class RolloutBuffer:
         episode_masks = np.ones(num_samples, dtype=bool)
         episode_ends = np.where(self.dones[:steps_to_use].reshape(-1))[0]
         if len(episode_ends) > 0:
-            # Mark positions after episode ends
             for end_pos in episode_ends:
                 if end_pos + 1 < num_samples:
                     episode_masks[end_pos + 1] = False
@@ -187,7 +171,7 @@ class RolloutBuffer:
             
         indices = np.array(valid_indices)
         
-        # If we don't have enough indices (due to episode boundary handling), fall back to regular shuffling
+        # If we don't have enough indices, fall back to regular shuffling
         if len(indices) < 0.5 * num_samples:
             indices = np.random.permutation(num_samples)
 
@@ -209,57 +193,4 @@ class RolloutBuffer:
 
     def size(self) -> int:
         """Returns the number of elements currently stored in the buffer."""
-        return self.total_buffer_size if self.full else self.pos * self.num_envs
-
-# Example Usage (Conceptual)
-if __name__ == '__main__':
-    # Dummy spaces
-    k = 4
-    h, w = 96, 96
-    action_dim = 3
-    obs_space = spaces.Box(low=0, high=255, shape=(k, h, w), dtype=np.uint8)
-    act_space = spaces.Box(low=-1, high=1, shape=(action_dim,), dtype=np.float32)
-
-    buffer_sz = 2048
-    batch_sz = 64
-
-    buffer = RolloutBuffer(buffer_size=buffer_sz, observation_space=obs_space, action_space=act_space, num_envs=1)
-
-    print(f"Buffer initialized. Size: {buffer.size()}")
-
-    # Simulate adding data (normally from agent interaction)
-    dummy_obs = obs_space.sample()
-    dummy_action = act_space.sample()
-    dummy_reward = np.array([0.5])
-    dummy_terminated = np.array([False])
-    dummy_truncated = np.array([False])
-    dummy_value = np.array([0.1]) # Example value from critic
-    dummy_log_prob = np.array([-0.5]) # Example log_prob from actor
-
-    for i in range(buffer_sz + 10): # Fill buffer and wrap around a bit
-        buffer.add(dummy_obs, dummy_action, dummy_reward, dummy_terminated, dummy_truncated, dummy_value, dummy_log_prob)
-
-    print(f"Buffer after adding data. Size: {buffer.size()}, Pos: {buffer.pos}, Full: {buffer.full}")
-
-    # Simulate computing returns/advantages
-    last_val = np.array([0.05])
-    last_done = np.array([True])
-    buffer.compute_returns_and_advantages(last_val, last_done)
-    print("Computed returns and advantages.")
-    print(f"Sample Advantages: {buffer.advantages[:5]}...")
-    print(f"Sample Returns: {buffer.returns[:5]}...")
-
-    # Simulate getting batches
-    batch_count = 0
-    print(f"\nIterating through batches of size {batch_sz}:")
-    for batch in buffer.get_batches(batch_sz):
-        obs_b, act_b, logp_b, adv_b, ret_b = batch
-        if batch_count < 2: # Print first couple
-            print(f"  Batch {batch_count+1}: obs={obs_b.shape}, act={act_b.shape}, logp={logp_b.shape}, adv={adv_b.shape}, ret={ret_b.shape}, device={obs_b.device}")
-        batch_count += 1
-    print(f"Total batches generated: {batch_count}")
-    expected_batches = (buffer_sz // batch_sz) if buffer_sz % batch_sz == 0 else (buffer_sz // batch_sz + 1)
-    print(f"Expected batches: {expected_batches}")
-    assert batch_count == expected_batches, "Batch count mismatch!"
-
-    print("\nRolloutBuffer seems functional.") 
+        return self.total_buffer_size if self.full else self.pos * self.num_envs 

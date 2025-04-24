@@ -1,57 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F # Added for loss functions
+import torch.nn.functional as F
 from torch.distributions import Normal
 import numpy as np
-import itertools # For chaining parameters
+import itertools
 
-# Assuming cnn_model.py and env_wrappers.py are in the same directory or accessible
 from .cnn_model import CNNFeatureExtractor
-from gymnasium import spaces # For type hinting
-# We'll need a RolloutBuffer eventually, define a placeholder for type hinting
+from gymnasium import spaces
 from typing import Generator, Tuple, Optional
-
-class RunningMeanStd:
-    """Normalizes observations using running statistics"""
-    def __init__(self, shape, epsilon=1e-4):
-        self.mean = np.zeros(shape, dtype=np.float32)
-        self.var = np.ones(shape, dtype=np.float32)
-        self.count = epsilon
-        self.epsilon = epsilon
-
-    def update(self, x):
-        batch_mean = np.mean(x, axis=0)
-        batch_var = np.var(x, axis=0)
-        batch_count = x.shape[0]
-
-        delta = batch_mean - self.mean
-        tot_count = self.count + batch_count
-
-        new_mean = self.mean + delta * batch_count / tot_count
-        m_a = self.var * self.count
-        m_b = batch_var * batch_count
-        M2 = m_a + m_b + np.square(delta) * self.count * batch_count / tot_count
-        new_var = M2 / tot_count
-
-        self.mean = new_mean
-        self.var = new_var
-        self.count = tot_count
-
-    def normalize(self, x):
-        return (x - self.mean) / np.sqrt(self.var + self.epsilon)
-
-class RolloutBuffer:
-    # --- Placeholder --- #
-    # This class will be implemented separately
-    # It needs to store (observations, actions, rewards, dones, log_probs, values)
-    # and compute returns and advantages (likely using GAE)
-    # It must provide a method like get_batches or __iter__
-    def get_batches(self, batch_size: int, device: torch.device) -> Generator[Tuple[torch.Tensor, ...], None, None]:
-        # Placeholder: This should yield batches of tensors on the correct device
-        # (observations, actions, old_log_probs, advantages, returns)
-        raise NotImplementedError
-    # --- End Placeholder --- #
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -20
@@ -65,24 +22,20 @@ class Actor(nn.Module):
         super().__init__()
         self.action_dim = action_dim
         self.initial_action_std = initial_action_std
-        self.fixed_std = fixed_std  # Whether to use fixed std or learned
+        self.fixed_std = fixed_std
 
-        # SIMPLIFIED: Single hidden layer with fewer neurons
-        hidden_dim = 256  # Increase from 128 to 256
+        hidden_dim = 256
         self.fc1 = nn.Linear(features_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)  # Add second layer
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc_mean = nn.Linear(hidden_dim, action_dim)
         
         if not fixed_std:
             self.fc_logstd = nn.Linear(hidden_dim, action_dim)
-            # Initialize log_std with higher values for more exploration
-            self.fc_logstd.weight.data.fill_(0.0)  # Initialize to zeros
-            self.fc_logstd.bias.data.fill_(np.log(self.initial_action_std))  # Set bias to log of initial std
+            self.fc_logstd.weight.data.fill_(0.0)
+            self.fc_logstd.bias.data.fill_(np.log(self.initial_action_std))
         else:
-            # Fixed log_std parameter (not a network output)
             self.log_std = nn.Parameter(torch.ones(action_dim) * np.log(self.initial_action_std), requires_grad=False)
         
-        # Initialize mean layer to produce near-zero outputs initially
         nn.init.orthogonal_(self.fc_mean.weight, gain=0.01)
         nn.init.constant_(self.fc_mean.bias, 0.0)
 
@@ -94,19 +47,14 @@ class Actor(nn.Module):
         :return: Action means, Action log standard deviations
         """
         x = torch.relu(self.fc1(features))
-        x = torch.relu(self.fc2(x))  # Add second layer
+        x = torch.relu(self.fc2(x))
 
-        # Output mean for the action distribution
-        # Use tanh to bound actions (e.g., steering between -1 and 1)
         mean = torch.tanh(self.fc_mean(x))
 
-        # Get log_std - either fixed or from network
         if not self.fixed_std:
             log_std = self.fc_logstd(x)
-            # Clamp log_std for stability
             log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
         else:
-            # Expand fixed log_std to match batch size
             batch_size = mean.size(0)
             log_std = self.log_std.expand(batch_size, -1)
             
@@ -120,7 +68,7 @@ class Actor(nn.Module):
         :return: Normal distribution object
         """
         mean, log_std = self.forward(features)
-        std = log_std.exp() # Standard deviation
+        std = log_std.exp()
         return Normal(mean, std)
 
     def evaluate_actions(self, features: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -133,8 +81,8 @@ class Actor(nn.Module):
         :return: log probability of the actions, entropy of the distribution
         """
         action_dist = self.get_action_dist(features)
-        log_prob = action_dist.log_prob(actions).sum(axis=-1) # Sum across action dimensions
-        entropy = action_dist.entropy().sum(axis=-1) # Sum across action dimensions
+        log_prob = action_dist.log_prob(actions).sum(axis=-1)
+        entropy = action_dist.entropy().sum(axis=-1)
         return log_prob, entropy
 
 
@@ -147,16 +95,15 @@ class Critic(nn.Module):
         super().__init__()
         hidden_dim = 256
         self.fc1 = nn.Linear(features_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)  # Add second layer
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc_value = nn.Linear(hidden_dim, 1)
         
-        # Initialize value layer
         nn.init.uniform_(self.fc_value.weight, -3e-3, 3e-3)
         nn.init.uniform_(self.fc_value.bias, -3e-3, 3e-3)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         x = torch.relu(self.fc1(features))
-        x = torch.relu(self.fc2(x))  # Process through second layer
+        x = torch.relu(self.fc2(x))
         value = self.fc_value(x)
         return value.squeeze(-1)
 
@@ -168,42 +115,42 @@ class PPOAgent:
     def __init__(self,
                  observation_space: spaces.Box,
                  action_space: spaces.Box,
-                 lr: float = 1e-4, # Reduced from 3e-4 to 1e-4
-                 gamma: float = 0.99, # Discount factor
-                 gae_lambda: float = 0.95, # Factor for GAE
-                 clip_epsilon: float = 0.1, # Reduced from 0.2 to 0.1
-                 epochs: int = 5, # Reduced from 10 to 5
-                 batch_size: int = 64, # Minibatch size for optimization
-                 vf_coef: float = 0.5, # Value function loss coefficient
-                 ent_coef: float = 0.01, # Entropy bonus coefficient
-                 max_grad_norm: float = 0.5, # Max gradient norm for clipping
-                 features_dim: int = 64, # Dimension after CNN (REDUCED from 128 to 64)
-                 target_kl: Optional[float] = 0.02, # Increased target KL from None to 0.02
-                 initial_action_std: float = 1.0, # Increased from 0.5 to 1.0
-                 weight_decay: float = 1e-5, # Reduced from 1e-4 to 1e-5
-                 fixed_std: bool = False, # Changed from True to False
-                 lr_warmup_steps: int = 5000, # Number of warmup steps for learning rate
+                 lr: float = 1e-4,
+                 gamma: float = 0.99,
+                 gae_lambda: float = 0.95,
+                 clip_epsilon: float = 0.1,
+                 epochs: int = 5,
+                 batch_size: int = 64,
+                 vf_coef: float = 0.5,
+                 ent_coef: float = 0.01,
+                 max_grad_norm: float = 0.5,
+                 features_dim: int = 64,
+                 target_kl: Optional[float] = 0.02,
+                 initial_action_std: float = 1.0,
+                 weight_decay: float = 1e-5,
+                 fixed_std: bool = False,
+                 lr_warmup_steps: int = 5000,
                  device: str = 'cpu'):
 
         self.observation_space = observation_space
         self.action_space = action_space
         self.action_dim = action_space.shape[0]
-        self.initial_lr = lr # Store initial learning rate
-        self.lr = lr # Current learning rate (will be updated by schedule)
+        self.initial_lr = lr
+        self.lr = lr
         self.gamma = gamma
-        self.gae_lambda = gae_lambda # Store for potential use in buffer
+        self.gae_lambda = gae_lambda
         self.clip_epsilon = clip_epsilon
         self.epochs = epochs
         self.batch_size = batch_size
         self.vf_coef = vf_coef
         self.ent_coef = ent_coef
         self.max_grad_norm = max_grad_norm
-        self.target_kl = target_kl # This is used for KL check in learn()
-        self.initial_action_std = initial_action_std # Needed for Actor init
-        self.weight_decay = weight_decay # Needed for optimizer
-        self.fixed_std = fixed_std # Needed for Actor init
+        self.target_kl = target_kl
+        self.initial_action_std = initial_action_std
+        self.weight_decay = weight_decay
+        self.fixed_std = fixed_std
         self.lr_warmup_steps = lr_warmup_steps
-        self.steps_done = 0  # Track total steps for warmup
+        self.steps_done = 0
         self.device = torch.device(device)
         
         # Feature Extractor (CNN)
@@ -217,7 +164,7 @@ class PPOAgent:
         # Critic Network
         self.critic = Critic(features_dim).to(self.device)
 
-        # Optimizers - Added weight decay
+        # Optimizers
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=self.lr, eps=1e-5, weight_decay=self.weight_decay)
         self.critic_optimizer = optim.Adam(
             itertools.chain(self.critic.parameters(), self.feature_extractor.parameters()),
@@ -242,20 +189,17 @@ class PPOAgent:
         """
         self.feature_extractor.eval()
         self.actor.eval()
-        self.critic.eval() # Critic also needed for value estimate during rollout
+        self.critic.eval()
 
-        # Observations are expected to be uint8 from the environment (FrameStack)
-        # The CNNFeatureExtractor handles the / 255.0 normalization internally
         observation_tensor = torch.as_tensor(observation, dtype=torch.float32).to(self.device)
 
         with torch.no_grad():
             features = self.feature_extractor(observation_tensor)
-            value = self.critic(features) # Get value estimate
+            value = self.critic(features)
             action_dist = self.actor.get_action_dist(features)
             action = action_dist.sample()
             log_prob = action_dist.log_prob(action).sum(axis=-1)
 
-        # Return batches
         action_np = action.detach().cpu().numpy()
         value_np = value.detach().cpu().numpy()
         log_prob_np = log_prob.detach().cpu().numpy()
@@ -268,11 +212,11 @@ class PPOAgent:
         
         # Warmup phase: linearly increase learning rate
         if self.steps_done < self.lr_warmup_steps:
-            # Gradual warmup from 30% to 100% of initial_lr (changed from 10% to 30%)
+            # Gradual warmup from 30% to 100% of initial_lr
             alpha = self.steps_done / self.lr_warmup_steps
             current_lr = self.initial_lr * (0.3 + 0.7 * alpha)
         else:
-            # Cosine annealing schedule (replaced linear decay)
+            # Cosine annealing schedule
             progress = min((self.steps_done - self.lr_warmup_steps) / 
                           (total_timesteps - self.lr_warmup_steps), 1.0)
             current_lr = self.initial_lr * 0.5 * (1.0 + np.cos(np.pi * progress))
@@ -289,7 +233,7 @@ class PPOAgent:
         self.lr = current_lr
         return current_lr
 
-    def learn(self, rollout_buffer: RolloutBuffer):
+    def learn(self, rollout_buffer):
         """
         Update the agent's networks using data from the rollout buffer.
         Returns a dictionary of training metrics.
@@ -307,46 +251,38 @@ class PPOAgent:
 
         # Loop for optimization epochs
         for epoch in range(self.epochs):
-            epoch_kl_divs = [] # Track KL within this epoch for early stopping
+            epoch_kl_divs = []
             # Iterate over batches from the rollout buffer
             for batch in rollout_buffer.get_batches(self.batch_size):
                 obs_batch, actions_batch, old_log_probs_batch, advantages_batch, returns_batch = batch
 
-                # --- Forward pass for current policy --- #
+                # Forward pass for current policy
                 features = self.feature_extractor(obs_batch)
-                values = self.critic(features) # Shape: (Batch,)
+                values = self.critic(features)
                 log_probs, entropy = self.actor.evaluate_actions(features, actions_batch)
-                # --------------------------------------- #
 
-                # Normalize advantages (often improves stability)
+                # Normalize advantages
                 advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
 
-                # --- Calculate Actor (Policy) Loss --- #
+                # Calculate Actor (Policy) Loss
                 ratio = torch.exp(log_probs - old_log_probs_batch)
                 
-                # Add ratio clipping for numerical stability (reduced upper bound from 10.0 to 5.0)
                 ratio = torch.clamp(ratio, 0.0, 5.0)
                 
                 policy_loss_1 = advantages_batch * ratio
                 policy_loss_2 = advantages_batch * torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
                 policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
-                # --------------------------------------- #
 
-                # --- Calculate Critic (Value) Loss --- #
-                # Simplified value loss - standard MSE without clipping
-                # This allows the value function to make larger necessary updates
+                # Calculate Critic (Value) Loss
                 value_loss = F.mse_loss(values, returns_batch)
-                # --------------------------------------- #
 
-                # --- Calculate Entropy Bonus --- #
+                # Calculate Entropy Bonus
                 entropy_loss = -torch.mean(entropy)
-                # ------------------------------- #
 
-                # --- Combine Losses --- #
+                # Combine Losses
                 loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
-                # ---------------------- #
 
-                # --- Optimization Steps --- #
+                # Optimization Steps
                 self.actor_optimizer.zero_grad()
                 self.critic_optimizer.zero_grad()
                 loss.backward()
@@ -360,11 +296,9 @@ class PPOAgent:
                 # Apply gradients
                 self.actor_optimizer.step()
                 self.critic_optimizer.step()
-                # -------------------------- #
 
-                # --- Calculate additional metrics for logging --- #
+                # Calculate additional metrics for logging
                 with torch.no_grad():
-                    # More conservative KL calculation - use a smaller coefficient to reduce KL values
                     approx_kl = 0.25 * torch.mean((log_probs - old_log_probs_batch)**2).cpu().numpy()
                     clip_fraction.append(torch.mean((torch.abs(ratio - 1.0) > self.clip_epsilon).float()).cpu().numpy())
 
@@ -373,30 +307,19 @@ class PPOAgent:
                 all_value_losses.append(value_loss.item())
                 all_entropy_losses.append(entropy_loss.item())
                 all_kl_divs.append(approx_kl)
-                epoch_kl_divs.append(approx_kl) # Track KL for early stopping within this epoch
-                # -------------------------------------------- #
+                epoch_kl_divs.append(approx_kl)
 
-            # --- KL Divergence Check for Early Stopping (per epoch) --- #
+            # KL Divergence Check (monitoring only)
             epoch_mean_kl = np.mean(epoch_kl_divs)
-            # Temporarily disable KL-based early stopping to ensure training progresses
-            # if self.target_kl is not None and epoch_mean_kl > 5.0 * self.target_kl:
-            #     # Only stop if we have done at least 5 mini-batches to ensure some learning
-            #     if len(epoch_kl_divs) >= 5:
-            #         print(f"Early stopping at epoch {epoch+1}/{self.epochs} due to reaching max KL divergence: {epoch_mean_kl:.4f} > {self.target_kl:.4f}")
-            #         break # Stop training epochs for this rollout
-            
-            # Instead, just log the KL divergence for monitoring
             if epoch_mean_kl > self.target_kl and epoch == 0:
                 print(f"KL divergence high at epoch {epoch+1}: {epoch_mean_kl:.4f} > {self.target_kl:.4f}, but continuing training")
-            # ------------------------------------------------------------ #
 
         # Calculate average metrics over all batches and epochs processed
         avg_policy_loss = np.mean(all_policy_losses)
         avg_value_loss = np.mean(all_value_losses)
         avg_entropy_loss = np.mean(all_entropy_losses)
         avg_approx_kl = np.mean(all_kl_divs)
-        # Need to compute clip fraction avg separately if early stopping happened
-        avg_clip_fraction = np.mean(clip_fraction) # Use last batch clip frac or avg across batches? Let's average.
+        avg_clip_fraction = np.mean(clip_fraction)
 
         return {
             "policy_loss": avg_policy_loss,
@@ -407,82 +330,8 @@ class PPOAgent:
         }
 
     def save(self, path: str):
-        pass # Placeholder for saving model state
-
-# Example Usage (minimal change, learn now has structure)
-if __name__ == '__main__':
-    # ... (previous setup code remains the same) ...
-    import gymnasium as gym
-    # Need env_wrappers for this test
-    try:
-        from .env_wrappers import GrayScaleObservation, FrameStack
-    except ImportError:
-        print("env_wrappers.py not found, skipping agent test.")
-        exit()
-
-    k = 4
-    dummy_env = gym.make("CarRacing-v3", continuous=True, domain_randomize=False)
-    dummy_env = GrayScaleObservation(dummy_env)
-    dummy_env = FrameStack(dummy_env, k)
-
-    obs_space = dummy_env.observation_space
-    act_space = dummy_env.action_space
-
-    print(f"Observation Space: {obs_space}")
-    print(f"Action Space: {act_space}")
-
-    agent = PPOAgent(observation_space=obs_space,
-                     action_space=act_space,
-                     device='cuda' if torch.cuda.is_available() else 'cpu')
-
-    obs, _ = dummy_env.reset()
-    print(f"Sample observation shape: {obs.shape}")
-
-    action, value, log_prob = agent.act(obs)
-    print(f"Selected action: {action}")
-    print(f"Estimated value: {value}")
-    print(f"Log probability: {log_prob}")
-
-    # Cannot test learn without a real RolloutBuffer
-    print("\nSkipping learn test without RolloutBuffer implementation.")
-    # agent.learn(None) # Pass None for now - WILL FAIL without buffer
-
-    dummy_env.close()
-    print("\nPPOAgent structure with learn logic seems functional (requires RolloutBuffer).")
-
-# Clean up imports if not used in main agent logic
-# del Actor, Critic, LOG_STD_MAX, LOG_STD_MIN, Normal, np, itertools
-
-    # Example Usage (for testing)
-    if __name__ == '__main__':
-        # Example parameters
-        batch_size = 5
-        num_features = 64 # Reduced from 256 to 64
-        num_actions = 3      # For CarRacing: Steering, Gas, Brake
-
-        # Dummy feature input
-        dummy_features = torch.randn(batch_size, num_features)
-
-        # Test Actor
-        actor = Actor(num_features, num_actions, initial_action_std=1.0, fixed_std=False)  # Updated params
-        print("Actor Network:")
-        print(actor)
-        mean, log_std = actor(dummy_features)
-        print(f"Actor output shapes: mean={mean.shape}, log_std={log_std.shape}")
-
-        action_dist = actor.get_action_dist(dummy_features)
-        print(f"Action distribution type: {type(action_dist)}")
-        sampled_actions = action_dist.sample()
-        log_probs = action_dist.log_prob(sampled_actions).sum(axis=-1) # Sum log_prob across action dimensions
-        print(f"Sampled actions shape: {sampled_actions.shape}")
-        print(f"Log probabilities shape: {log_probs.shape}")
-
-        # Test Critic
-        critic = Critic(num_features)
-        print("\nCritic Network:")
-        print(critic)
-        value = critic(dummy_features)
-        print(f"Critic output shape: {value.shape}")
-
-        assert value.shape == (batch_size, 1), "Critic output shape mismatch!"
-        print("\nActor and Critic networks seem functional.") 
+        torch.save({
+            'feature_extractor_state_dict': self.feature_extractor.state_dict(),
+            'actor_state_dict': self.actor.state_dict(),
+            'critic_state_dict': self.critic.state_dict(),
+        }, path) 
