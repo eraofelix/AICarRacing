@@ -19,84 +19,68 @@ config = {
     "frame_stack": 4,
     "seed": 42, # For reproducibility
     "num_envs": 8, # Number of parallel environments
-    "max_episode_steps": 300, # Start with shorter episodes for faster feedback
-    "domain_randomize_intensity": 0.0, # Start with no randomization initially
-    "initial_state_randomization": True, # Randomize starting states
-    
-    # Environment diversity settings
-    "use_diverse_envs": True, # Use diverse environment population
-    "action_noise_std": 0.1,  # Add noise to actions during exploration
-    "env_difficulty_split": [4, 2, 2], # [conservative, aggressive, random] count
+    "max_episode_steps": 700, # Longer episodes for fine-tuning
+    "domain_randomize_intensity": 0.1, # Enable low-level domain randomization
     
     # Dynamic episode length config
-    "dynamic_episode_length": True,
-    "episode_length_thresholds": {  # More frequent/gradual increases
-        20: 400,   # Start increasing episode length at a lower reward threshold
-        50: 500,   # Increase more at 50 reward
-        100: 600,  # At mean reward 100, increase to 600 steps
-        150: 800,  # At mean reward 150, increase to 800 steps
-        200: 1000,  # At mean reward 200, increase to 1000 steps
+    "dynamic_episode_length": True, # Enable/disable dynamic episode length adjustment
+    "episode_length_thresholds": {  # Map of mean reward threshold -> new episode length
+        100: 800,   # At mean reward 100, increase to 800 steps
+        200: 900,   # At mean reward 200, increase to 900 steps
+        300: 1000,  # At mean reward 300, increase to 1000 steps
     },
-    "last_length_update_reward": 0,
+    "last_length_update_reward": 0,  # Track the last threshold that triggered an update
 
-    # Training settings - Extremely conservative to address KL divergence
-    "total_timesteps": 5_000_000,
-    "learning_rate": 1e-6,  # Further reduced from 5e-6 to 1e-6
-    "buffer_size": 4096,
-    "batch_size": 64,  # Reduced from 128 to 64 for more granular updates
-    "ppo_epochs": 15, 
+    # Training settings
+    "total_timesteps": 10_000_000, # Fine-tuning steps
+    "learning_rate": 5e-6, # Reduced LR for fine-tuning
+    "buffer_size": 4096,  # Keep buffer size
+    "batch_size": 64, # Keep batch size
+    "ppo_epochs": 3, # Keep PPO epochs
     "gamma": 0.99,
     "gae_lambda": 0.95,
-    "clip_epsilon": 0.02,   # Further reduced from 0.05 to 0.02
-    "vf_coef": 0.7, 
-    "ent_coef": 0.01, # Further reduced from 0.02 to 0.01
-    "max_grad_norm": 0.3, # Reduced from 0.5 to 0.3
-    "target_kl": 1.0, # Doubled from 0.5 to 1.0 - much more permissive
-    "features_dim": 512,
-    
-    # Staged exploration settings (much more conservative)
+    "clip_epsilon": 0.2, # Keep clip epsilon
+    "vf_coef": 0.7, # Keep value function coefficient
+    "ent_coef": 0.02, # Increased entropy coefficient for exploration
+    "max_grad_norm": 0.5,
+    "target_kl": 0.05, # Increased from 0.015 to allow more aggressive updates initially
+    "features_dim": 256, # Keep features_dim
+
+    # Staged exploration settings (for finetuning)
     "staged_exploration": True,
     "exploration_stages": [
-        {"steps": 500000, "action_noise": 0.03, "ent_coef": 0.01, "target_kl": 1.0, "outlier_factor": 1.1},
-        {"steps": 1000000, "action_noise": 0.02, "ent_coef": 0.008, "target_kl": 0.8, "outlier_factor": 1.1},
-        {"steps": 5000000, "action_noise": 0.01, "ent_coef": 0.005, "target_kl": 0.6, "outlier_factor": 1.0}
+        {"steps": 1000000, "action_noise": 0.05, "ent_coef": 0.03, "target_kl": 0.05, "outlier_factor": 1.2},
+        {"steps": 3000000, "action_noise": 0.02, "ent_coef": 0.02, "target_kl": 0.02, "outlier_factor": 1.1},
+        {"steps": 10000000, "action_noise": 0.01, "ent_coef": 0.01, "target_kl": 0.015, "outlier_factor": 1.0}
     ],
     
-    # Outlier emphasis (minimal)
+    # Outlier emphasis (more conservative for finetuning)
     "emphasize_outliers": True,
-    "outlier_factor": 1.1, # Reduced from 1.2
-    "outlier_threshold": 2.5, # Increased from 2.0
-  
-    # Entropy annealing for exploration
-    "entropy_annealing": False,  
-    "initial_entropy_coef": 0.01, # Reduced from 0.05
-    "final_entropy_coef": 0.005, # Reduced from 0.01
-    "entropy_decay_steps": 800000, 
+    "outlier_factor": 1.2, # More conservative than training
+    "outlier_threshold": 1.5, # Standard deviations from mean
     
-    # Learning rate scheduling - prevent post-warmup spikes
-    "lr_warmup_steps": 200000, # Extended from 100000 to 200000
-    "lr_warmup_factor": 0.01, # Reduced from 0.05 to 0.01 for extremely gradual warmup
+    # Observation normalization
+    "use_obs_norm": True, # Enable observation normalization
 
     # Domain randomization progression
-    "domain_randomize_schedule": True,
-    "domain_randomize_steps": 1_000_000,  
-    "domain_randomize_check_interval": 50_000,  
-    "domain_randomize_start_step": 1_000_000,  
+    "domain_randomize_schedule": True,  # Enable gradual increase in randomization
+    "domain_randomize_steps": 5_000_000,  # Steps over which to increase to 0.5 (50% randomization)
+    "domain_randomize_check_interval": 100_000,  # Check and update intensity every 100k steps
+    "domain_randomize_max": 0.5,  # Maximum randomization level (50%)
 
-    # Reward shaping - Boost for aggressive learning
-    "use_reward_shaping": True,
-    "velocity_reward_weight": 0.07,  
-    "progress_reward_weight": 0.03, 
-    "centerline_reward_weight": 0.01, 
-    "survival_reward": 0.1, 
+    # Reward shaping options - REDUCED BY HALF for second stage
+    "use_reward_shaping": True,  # Keep reward shaping enabled
+    "velocity_reward_weight": 0.005,   # Reduced from 0.01
+    "progress_reward_weight": 0.005,   # Reduced from 0.01
+    "centerline_reward_weight": 0.01,  # Reduced from 0.02
+    "survival_reward": 0.05,           # Reduced from 0.1
 
     # Logging and Saving
-    "log_interval": 1,
-    "save_interval": 10,
-    "save_dir": "./models/ppo_carracing",
-    "log_dir": "./logs/ppo_carracing",
-    "load_checkpoint_path": None, # Set to None to train from scratch
-    "use_obs_norm": True, # Enable observation normalization for stability
+    "log_interval": 1, # Log stats every N rollouts
+    "save_interval": 10, # Save model every N rollouts
+    "save_dir": "./models/ppo_carracing_finetuned",
+    "log_dir": "./logs/ppo_carracing_finetuned",
+    "load_checkpoint_path": "./models/ppo_carracing/best_model.pth", # Load the best model
 
     # Hardware
     "device": "cuda" if torch.cuda.is_available() else "cpu",
@@ -110,42 +94,19 @@ def set_seeds(seed):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
-def make_env(env_id, seed, frame_stack, max_episode_steps, env_type="conservative"):
+def make_env(env_id, seed, frame_stack, max_episode_steps):
     """Helper function that returns a function to create and wrap a single environment instance."""
     def _init():
         # Derive a unique seed for this process to ensure envs are different
         process_seed = seed + int.from_bytes(os.urandom(4), 'little')
         set_seeds(process_seed) # Also set seeds for torch/numpy within the process
-        
         # Use partial domain randomization based on current intensity
-        random_intensity = config.get("domain_randomize_intensity", 1.0)
+        random_intensity = config.get("domain_randomize_intensity", 0.0)
         # Only apply full randomization if intensity is 1.0, otherwise use custom wrapper
         domain_random = random_intensity >= 0.01  # Even tiny intensity triggers randomization
+        env = gym.make(env_id, continuous=True, domain_randomize=domain_random)
         
-        # Apply different environment configurations based on type
-        if env_type == "aggressive":
-            # More challenging environment with higher friction and potential obstacles
-            env = gym.make(env_id, continuous=True, domain_randomize=domain_random)
-            # Modify environment to be more challenging - implementation depends on env
-            # For CarRacing-v3, we would adjust friction, increase speed, etc.
-            # These are placeholder settings since CarRacing doesn't expose these directly
-            env.friction_scale = 0.8 if hasattr(env, 'friction_scale') else None
-            env.engine_power = 1.2 if hasattr(env, 'engine_power') else None
-        elif env_type == "random":
-            # Highly randomized environment with unpredictable conditions
-            env = gym.make(env_id, continuous=True, domain_randomize=True)  # Always randomize
-            # Apply additional randomization if available
-        else:  # "conservative" - standard environment
-            env = gym.make(env_id, continuous=True, domain_randomize=domain_random)
-        
-        # Apply initial state randomization if enabled
-        if config.get("initial_state_randomization", False):
-            # Add variation to starting position and velocity
-            init_random_seed = process_seed + 100
-        else:
-            init_random_seed = process_seed
-            
-        env.reset(seed=init_random_seed)
+        env.reset(seed=process_seed)
         env.action_space.seed(process_seed)
         env = GrayScaleObservation(env)
         
@@ -164,41 +125,6 @@ def make_env(env_id, seed, frame_stack, max_episode_steps, env_type="conservativ
         return env
     # Return the function itself, not the result of calling it
     return _init
-
-def create_diverse_env_population(env_id, base_seed, frame_stack, max_episode_steps):
-    """Create a diverse population of environments with different characteristics."""
-    if not config.get("use_diverse_envs", False):
-        # If diverse envs disabled, return standard environments
-        return [make_env(env_id, base_seed + i, frame_stack, max_episode_steps) 
-                for i in range(config["num_envs"])]
-    
-    # Get environment counts for each type
-    env_counts = config.get("env_difficulty_split", [4, 2, 2])  # [conservative, aggressive, random]
-    
-    # Create environment list
-    env_fns = []
-    
-    # Add conservative environments
-    for i in range(env_counts[0]):
-        env_fns.append(make_env(env_id, base_seed + i, frame_stack, max_episode_steps, "conservative"))
-    
-    # Add aggressive environments 
-    for i in range(env_counts[1]):
-        env_fns.append(make_env(env_id, base_seed + 100 + i, frame_stack, max_episode_steps, "aggressive"))
-    
-    # Add random environments
-    for i in range(env_counts[2]):
-        env_fns.append(make_env(env_id, base_seed + 200 + i, frame_stack, max_episode_steps, "random"))
-    
-    # Ensure we have the correct number of environments
-    assert len(env_fns) == config["num_envs"], f"Created {len(env_fns)} environments, expected {config['num_envs']}"
-    
-    print(f"Created diverse environment population:")
-    print(f"  - {env_counts[0]} conservative environments")
-    print(f"  - {env_counts[1]} aggressive environments")
-    print(f"  - {env_counts[2]} random environments")
-    
-    return env_fns
 
 # --- Reward Shaping Wrapper --- #
 class RewardShapingWrapper(gym.Wrapper):
@@ -261,7 +187,7 @@ class RewardShapingWrapper(gym.Wrapper):
             
         return obs, reward, terminated, truncated, info
 
-def emphasize_outlier_experiences(advantages, factor=2.0, threshold=1.5):
+def emphasize_outlier_experiences(advantages, factor=1.2, threshold=1.5):
     """
     Amplify advantages for outlier experiences to emphasize exploration.
     
@@ -290,11 +216,11 @@ def emphasize_outlier_experiences(advantages, factor=2.0, threshold=1.5):
     if outlier_count > 0:
         # Apply amplification factor to outliers
         advantages[large_adv_mask] *= factor
-        print(f"Emphasized {outlier_count} outlier experiences by factor {factor}")
+        print(f"Emphasized {outlier_count} outlier experiences by factor {factor:.2f}")
     
     return advantages, outlier_count
 
-def add_action_noise(actions, noise_std=0.1):
+def add_action_noise(actions, noise_std=0.05):
     """
     Add Gaussian noise to actions to increase exploration.
     
@@ -417,15 +343,21 @@ class ObservationNormalizer:
 # --- Main Training Loop --- #
 if __name__ == "__main__":
     print(f"Using device: {config['device']}")
+    print("FINE-TUNING FROM CHECKPOINT:", config["load_checkpoint_path"])
     set_seeds(config["seed"]) # Set seeds early for main process
 
     # Create vectorized environment FIRST
     print(f"Creating {config['num_envs']} parallel environments...")
-    env_fns = create_diverse_env_population(config["env_id"], config["seed"], config["frame_stack"], config["max_episode_steps"])
+    env_fns = [make_env(config["env_id"], config["seed"] + i, config["frame_stack"], config["max_episode_steps"]) 
+              for i in range(config["num_envs"])]
     env = gymnasium.vector.AsyncVectorEnv(env_fns)
     print(f"Observation Space: {env.single_observation_space}")
     print(f"Action Space: {env.single_action_space}")
     print(f"Using TimeLimit wrapper with {config['max_episode_steps']} max steps per episode")
+    print(f"Domain randomization intensity: {config['domain_randomize_intensity']}")
+    print(f"Reward shaping weights: velocity={config['velocity_reward_weight']}, "
+          f"progress={config['progress_reward_weight']}, centerline={config['centerline_reward_weight']}, "
+          f"survival={config['survival_reward']}")
 
     # Create Agent - Use attributes from the vector env
     agent = PPOAgent(env.single_observation_space,
@@ -446,7 +378,7 @@ if __name__ == "__main__":
     # Create reward normalizer
     reward_rms = RunningMeanStd(shape=())  # Create a fresh instance to forget old reward statistics
     print("Created reward normalizer for training stability")
-    
+
     # Create observation normalizer if enabled
     if config.get("use_obs_norm", False):
         # Initialize with observation shape without batch dimension
@@ -476,7 +408,7 @@ if __name__ == "__main__":
     best_mean_reward = -np.inf
     start_time = time.time()
 
-    # --- Load Checkpoint if specified --- #
+    # --- Load Checkpoint --- #
     start_global_step = 0
     start_num_rollouts = 0
     if config["load_checkpoint_path"] and os.path.exists(config["load_checkpoint_path"]):
@@ -491,60 +423,31 @@ if __name__ == "__main__":
             agent.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
             agent.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
 
-            start_global_step = checkpoint.get('global_step', 0)
-            start_num_rollouts = checkpoint.get('num_rollouts', 0)
+            # Don't load the training step or rollout counter - start from 0 for this fine-tuning phase
+            # But do load best mean reward for reference
             best_mean_reward = checkpoint.get('best_mean_reward', -np.inf)
             
-            # Restore saved config if available
-            if 'config' in checkpoint:
-                saved_config = checkpoint['config']
-                if 'max_episode_steps' in saved_config:
-                    config['max_episode_steps'] = saved_config['max_episode_steps']
-                    print(f"Loaded max_episode_steps: {config['max_episode_steps']}")
-                if 'last_length_update_reward' in saved_config:
-                    config['last_length_update_reward'] = saved_config['last_length_update_reward']
-                    print(f"Loaded last_length_update_reward: {config['last_length_update_reward']}")
-                    # Make sure we create environments with the loaded max_episode_steps
-                    env.close()
-                    env_fns = create_diverse_env_population(config["env_id"], config["seed"], config["frame_stack"], config["max_episode_steps"])
-                    env = gymnasium.vector.AsyncVectorEnv(env_fns)
-                    print(f"Recreated environments with loaded max_episode_steps: {config['max_episode_steps']}")
+            print(f"Starting fine-tuning with loaded best mean reward: {best_mean_reward:.2f}")
+            
+            # DO NOT freeze any CNN layers - allow the entire network to adapt to domain randomization
+            print("All network layers are trainable for fine-tuning with domain randomization")
 
-            print(f"Resuming training from global_step={start_global_step}, num_rollouts={start_num_rollouts}")
-            print(f"Loaded best mean reward: {best_mean_reward:.2f}")
-
-            # Freeze only the first two CNN blocks
-            # Assuming blocks are Conv2d -> BatchNorm2d -> ReLU
-            if hasattr(agent.feature_extractor, 'cnn') and len(agent.feature_extractor.cnn) >= 4:
-                frozen_layers = 0
-                for i in range(4): # Check first 4 layers (2 blocks)
-                    layer = agent.feature_extractor.cnn[i]
-                    for param in layer.parameters():
-                        param.requires_grad = False
-                    frozen_layers += 1
-                print(f"Frozen the first {frozen_layers} layers (2 blocks) of the CNN for fine-tuning")
-            else:
-                print("Could not freeze CNN layers (structure might have changed).")
-
-            # After successfully loading the checkpoint, add:
+            # Apply entropy boost immediately for the fine-tuning phase
             config["normalize_rewards"] = True
             print("Enabled reward normalization for continued training")
-            # Don't immediately boost entropy unless at a transition point
+            
             if "original_ent_coef" not in config:
                 config["original_ent_coef"] = agent.ent_coef  # Store current value
-            # Add this if you recently had an episode length increase (optional)
-            config["boosted_ent_coef"] = config["original_ent_coef"] * 1.1  # Reduced from 1.3x to 1.1x
-            agent.ent_coef = config["boosted_ent_coef"]
-            config["last_entropy_boost_step"] = start_global_step
-            config["entropy_boost_duration"] = 50000 # Reduced from 100000 to 50000
-            print(f"Applied minimal entropy boost from {config['original_ent_coef']:.4f} to {config['boosted_ent_coef']:.4f} decaying over {config['entropy_boost_duration']} steps")
+                
+            # Boost entropy coefficient
+            agent.ent_coef = config["ent_coef"]  # Apply higher entropy directly
+            print(f"Set entropy coefficient to {agent.ent_coef:.4f} for exploration during fine-tuning")
         except Exception as e:
-            print(f"Error loading checkpoint state_dicts: {e}. Training from scratch.")
-            start_global_step = 0
-            start_num_rollouts = 0
-            best_mean_reward = -np.inf
+            print(f"Error loading checkpoint state_dicts: {e}. Cannot continue fine-tuning.")
+            exit(1)
     else:
-        print("No checkpoint found or specified, starting training from scratch.")
+        print("No checkpoint found or specified. Fine-tuning requires a pre-trained model.")
+        exit(1)
 
     # Initialize environment state - use the vector env reset
     observations, infos = env.reset(seed=config["seed"])
@@ -554,7 +457,7 @@ if __name__ == "__main__":
     current_episode_rewards_vec = np.zeros(config["num_envs"], dtype=np.float32)
     current_episode_lengths_vec = np.zeros(config["num_envs"], dtype=np.int32)
 
-    print("Starting training...")
+    print("Starting fine-tuning...")
     while global_step < config["total_timesteps"]:
         # --- Collect Rollout --- #
         buffer.pos = 0
@@ -567,41 +470,32 @@ if __name__ == "__main__":
         # Keep track of last step dones for GAE calculation
         last_terminateds = np.zeros(config["num_envs"], dtype=bool)
         last_truncateds = np.zeros(config["num_envs"], dtype=bool)
-        
+
         # --- Update Exploration Parameters (industry practice) --- #
         config = update_exploration_parameters(config, global_step)
         # Update agent's entropy coefficient with the current stage value
         agent.ent_coef = config["ent_coef"]
         # Update agent's target KL with the current stage value
         agent.target_kl = config["target_kl"]
-        
-        # --- Update Domain Randomization Intensity --- #
-        if config.get("domain_randomize_schedule", False) and global_step % config.get("domain_randomize_check_interval", 50_000) == 0:
-            # Only start randomization after start_step
-            if global_step >= config.get("domain_randomize_start_step", 1_000_000):
-                # Calculate current intensity based on progress through training
-                randomize_progress = min(
-                    (global_step - config.get("domain_randomize_start_step", 1_000_000)) / 
-                    config.get("domain_randomize_steps", 1_000_000), 1.0
-                )
-                old_intensity = config.get("domain_randomize_intensity", 0.0)
-                # Start from a base of 0.1 and increase to 1.0
-                new_intensity = min(0.1 + 0.9 * randomize_progress, 1.0)
-                
-                if new_intensity > old_intensity:
-                    config["domain_randomize_intensity"] = new_intensity
-                    print(f"\n==== DOMAIN RANDOMIZATION UPDATE ====")
-                    print(f"Increasing domain randomization from {old_intensity:.2f} to {new_intensity:.2f}")
-                    print(f"====================================\n")
-                    
-                    # Log the change
-                    writer.add_scalar("Config/domain_randomize_intensity", new_intensity, global_step)
-                    
-                    # No need to boost entropy as it's now handled by staged exploration
-                    print(f"Domain randomization increase handled by staged exploration")
-            else:
-                print(f"Domain randomization scheduled but waiting until step {config.get('domain_randomize_start_step', 1_000_000)}")
 
+        # --- Update Domain Randomization Intensity --- #
+        if config.get("domain_randomize_schedule", False) and global_step % config.get("domain_randomize_check_interval", 100_000) == 0:
+            # Calculate current intensity based on progress through training
+            max_randomize_steps = config.get("domain_randomize_steps", 5_000_000)
+            progress = min(global_step / max_randomize_steps, 1.0)
+            old_intensity = config.get("domain_randomize_intensity", 0.1)
+            max_intensity = config.get("domain_randomize_max", 0.5)
+            new_intensity = min(0.1 + (max_intensity - 0.1) * progress, max_intensity)  # Gradually increase from 10% to max_intensity
+            
+            if new_intensity > old_intensity + 0.05:  # Only update if significant change (>5%)
+                config["domain_randomize_intensity"] = new_intensity
+                print(f"\n==== DOMAIN RANDOMIZATION UPDATE ====")
+                print(f"Increasing domain randomization from {old_intensity:.2f} to {new_intensity:.2f}")
+                print(f"====================================\n")
+                
+                # Log the change
+                writer.add_scalar("Config/domain_randomize_intensity", new_intensity, global_step)
+        
         for step in range(steps_per_rollout_per_env):
             step_global_step = global_step + step * config["num_envs"] # Estimate step for LR schedule
             
@@ -611,62 +505,29 @@ if __name__ == "__main__":
 
             # --- Update Learning Rate with improved schedule --- #
             progress = step_global_step / config["total_timesteps"]
-            
-            # Apply warmup first if in warmup phase
-            if step_global_step < config.get("lr_warmup_steps", 0):
-                # Linear warmup from warmup_factor * learning_rate to learning_rate
-                warmup_factor = config.get("lr_warmup_factor", 0.3)
-                warmup_progress = step_global_step / config.get("lr_warmup_steps", 1)
-                new_lr = config["learning_rate"] * (warmup_factor + (1.0 - warmup_factor) * warmup_progress)
-                if step % 200 == 0:
-                    print(f"LR Warmup: {new_lr:.2e}, progress: {warmup_progress:.2f}")
-            else:
-                # Cosine annealing after warmup
-                remaining_progress = (step_global_step - config.get("lr_warmup_steps", 0)) / (config["total_timesteps"] - config.get("lr_warmup_steps", 0))
-                new_lr = config["learning_rate"] * 0.5 * (1.0 + np.cos(np.pi * remaining_progress))
-                # Keep LR higher for longer
-                new_lr = max(new_lr, 1e-6)
+            # Use actual base LR instead of hardcoded 5e-5
+            base_lr = config["learning_rate"] * 0.5 * (1.0 + np.cos(np.pi * progress))
+            # Keep LR higher for longer
+            base_lr = max(base_lr, 1e-6) # Lowered minimum LR
 
-            # Apply LR warmup after episode length change if active
+            # Apply warmup after episode length change if active
             if config.get("lr_warmup_after_length_change", False):
                 if global_step < config["lr_warmup_start_step"] + config["lr_warmup_duration"]:
                     warmup_progress = (global_step - config["lr_warmup_start_step"]) / config["lr_warmup_duration"]
                     warmup_factor = config["lr_warmup_factor"] + (1.0 - config["lr_warmup_factor"]) * warmup_progress
-                    new_lr = new_lr * warmup_factor
+                    new_lr = base_lr * warmup_factor
                 else:
+                    new_lr = base_lr
                     # Disable warmup after completed
                     config["lr_warmup_after_length_change"] = False
-            
-            # Apply new learning rate
+            else:
+                new_lr = base_lr
+
             for param_group in agent.actor_optimizer.param_groups:
                 param_group['lr'] = new_lr
             for param_group in agent.critic_optimizer.param_groups:
                 param_group['lr'] = new_lr
             agent.lr = new_lr # Update agent's current lr tracker
-            
-            # --- Update Entropy Coefficient for exploration --- #
-            if config.get("entropy_annealing", False):
-                # Linear annealing from initial to final entropy coefficient
-                entropy_progress = min(step_global_step / config.get("entropy_decay_steps", 800000), 1.0)
-                initial_ent = config.get("initial_entropy_coef", 0.05)
-                final_ent = config.get("final_entropy_coef", 0.01)
-                current_ent_coef = initial_ent + (final_ent - initial_ent) * entropy_progress
-                agent.ent_coef = current_ent_coef
-                
-                # Log entropy coefficient periodically
-                if step % 100 == 0:
-                    print(f"Current entropy coefficient: {agent.ent_coef:.6f}")
-            
-            # Check if we're in entropy boost decay period after episode length change
-            elif "last_entropy_boost_step" in config and global_step < config["last_entropy_boost_step"] + config["entropy_boost_duration"]:
-                # Calculate decay progress (0.0 to 1.0)
-                decay_progress = (global_step - config["last_entropy_boost_step"]) / config["entropy_boost_duration"]
-                # Linearly interpolate between boosted and original value
-                current_ent_coef = config["boosted_ent_coef"] * (1.0 - decay_progress) + config["original_ent_coef"] * decay_progress
-                agent.ent_coef = current_ent_coef
-                # Print entropy value periodically
-                if step % 100 == 0:
-                    print(f"Current entropy coefficient: {agent.ent_coef:.6f}")
 
             # Get action, value, log_prob from agent
             # Normalize observations if enabled
@@ -678,7 +539,7 @@ if __name__ == "__main__":
                 actions, values, log_probs = agent.act(norm_observations)
             else:
                 actions, values, log_probs = agent.act(observations)
-
+                
             # Add exploration noise to actions if enabled
             if config.get("action_noise_std", 0.0) > 0.0:
                 actions = add_action_noise(actions, config.get("action_noise_std"))
@@ -701,7 +562,7 @@ if __name__ == "__main__":
                 print(f"Info keys: {infos.keys()}")
             
             # Update episode trackers
-            current_episode_rewards_vec += rewards
+            current_episode_rewards_vec += raw_rewards  # Track original, non-normalized rewards
             current_episode_lengths_vec += 1
 
             # Store transition in buffer
@@ -777,7 +638,7 @@ if __name__ == "__main__":
         # Apply outlier emphasis if enabled
         if config.get("emphasize_outliers", False):
             # Get factor and threshold from config - use the value from current exploration stage
-            factor = config.get("outlier_factor", 1.5)
+            factor = config.get("outlier_factor", 1.2)
             threshold = config.get("outlier_threshold", 1.5)
             
             # Emphasize outlier experiences in buffer advantages
@@ -800,53 +661,40 @@ if __name__ == "__main__":
         if num_rollouts % config["log_interval"] == 0 and len(episode_rewards) > 0:
             mean_reward = np.mean(episode_rewards)
             mean_length = np.mean(episode_lengths)
-            
-            # Calculate more metrics for tracking exploration
-            recent_rewards = list(episode_rewards)[-10:]  # Last 10 episodes
-            best_recent_reward = max(recent_rewards) if recent_rewards else 0
-            reward_variance = np.var(episode_rewards) if len(episode_rewards) > 1 else 0
-            
             fps = int(steps_collected / rollout_duration) if rollout_duration > 0 else float('inf')
             update_fps = int(steps_collected / update_duration) if update_duration > 0 else float('inf')
             total_duration = time.time() - start_time
 
-            print(f"\n====== Rollout {num_rollouts} | Timesteps {global_step}/{config['total_timesteps']} ======")
-            print(f"  Rewards: Mean: {mean_reward:.2f}, Best Recent: {best_recent_reward:.2f}, Variance: {reward_variance:.2f}")
-            print(f"  Episode Length: {mean_length:.1f}, Episodes: {len(episode_rewards)}")
-            print(f"  Efficiency: Rollout FPS: {fps}, Update FPS: {update_fps}, Total Time: {total_duration:.2f}s")
-            print(f"  Learning: LR: {agent.lr:.2e}, Entropy Coef: {agent.ent_coef:.4f}")
-            print(f"  Environment: Steps: {config['max_episode_steps']}, Domain Random: {config['domain_randomize_intensity']:.2f}")
-            print(f"  PPO Metrics: KL: {metrics['approx_kl']:.4f}, Clip: {metrics['clip_fraction']:.4f}")
-            print(f"  Losses: Policy: {metrics['policy_loss']:.4f}, Value: {metrics['value_loss']:.4f}, Entropy: {metrics['entropy_loss']:.4f}")
+            print(f"-- Rollout {num_rollouts} | Timesteps {global_step}/{config['total_timesteps']} --")
+            print(f"  Stats (last {len(episode_rewards)} ep): Mean Reward: {mean_reward:.2f}, Mean Length: {mean_length:.1f}")
+            print(f"  Speed: Rollout FPS: {fps}, Update FPS: {update_fps}")
+            print(f"  Total Time: {total_duration:.2f}s")
+            print(f"  LR: {new_lr:.2e}") 
+            print(f"  Current max_episode_steps: {config['max_episode_steps']}")
+            print(f"  Domain randomization: {config['domain_randomize_intensity']:.2f}")
 
-            # TensorBoard Logging - Add more metrics
+            # TensorBoard Logging
             writer.add_scalar("Charts/mean_episode_reward", mean_reward, global_step)
-            writer.add_scalar("Charts/best_recent_reward", best_recent_reward, global_step)
-            writer.add_scalar("Charts/reward_variance", reward_variance, global_step)
             writer.add_scalar("Charts/mean_episode_length", mean_length, global_step)
-            
             writer.add_scalar("Speed/rollout_fps", fps, global_step)
             writer.add_scalar("Speed/update_fps", update_fps, global_step)
-            
             writer.add_scalar("Loss/policy_loss", metrics["policy_loss"], global_step)
             writer.add_scalar("Loss/value_loss", metrics["value_loss"], global_step)
             writer.add_scalar("Loss/entropy_loss", metrics["entropy_loss"], global_step)
-            
             writer.add_scalar("Stats/approx_kl", metrics["approx_kl"], global_step)
             writer.add_scalar("Stats/clip_fraction", metrics["clip_fraction"], global_step)
+            writer.add_scalar("Config/learning_rate", new_lr, global_step)
+            writer.add_scalar("Config/max_episode_steps", config["max_episode_steps"], global_step)
+            writer.add_scalar("Config/domain_randomize_intensity", config["domain_randomize_intensity"], global_step)
             
             # Log exploration parameters
             writer.add_scalar("Exploration/entropy_coefficient", agent.ent_coef, global_step)
             writer.add_scalar("Exploration/target_kl", agent.target_kl, global_step)
             writer.add_scalar("Exploration/action_noise", config.get("action_noise_std", 0.0), global_step)
-            writer.add_scalar("Exploration/outlier_factor", config.get("outlier_factor", 1.5), global_step)
+            writer.add_scalar("Exploration/outlier_factor", config.get("outlier_factor", 1.2), global_step)
             if "outlier_count" in locals() and outlier_count > 0:
                 writer.add_scalar("Exploration/outlier_percentage", outlier_percentage, global_step)
                 writer.add_scalar("Exploration/outlier_count", outlier_count, global_step)
-            
-            writer.add_scalar("Config/learning_rate", agent.lr, global_step)
-            writer.add_scalar("Config/max_episode_steps", config["max_episode_steps"], global_step)
-            writer.add_scalar("Config/domain_randomize_intensity", config.get("domain_randomize_intensity", 0.0), global_step)
 
             # --- Save Best Model --- #
             if mean_reward > best_mean_reward:
@@ -869,11 +717,8 @@ if __name__ == "__main__":
                     print(f"Error saving best model: {e}")
 
         # --- Periodic Saving --- #
-        # Avoid saving at rollout 0 if not resuming from step 0
-        save_cond = (start_global_step == 0 and num_rollouts > 0) or \
-                    (start_global_step > 0 and num_rollouts > start_num_rollouts)
-        if save_cond and num_rollouts % config["save_interval"] == 0:
-            save_path = os.path.join(config["save_dir"], f"ppo_carracing_{global_step}.pth")
+        if num_rollouts > 0 and num_rollouts % config["save_interval"] == 0:
+            save_path = os.path.join(config["save_dir"], f"ppo_carracing_finetuned_{global_step}.pth")
             try:
                 torch.save({
                     'feature_extractor_state_dict': agent.feature_extractor.state_dict(),
@@ -892,7 +737,6 @@ if __name__ == "__main__":
 
         # --- Dynamic Episode Length Adjustment --- #
         if config["dynamic_episode_length"] and len(episode_rewards) > 0:
-            mean_reward = np.mean(episode_rewards)
             for threshold, new_length in sorted(config["episode_length_thresholds"].items()):
                 # Check if we've crossed a threshold and haven't updated for this threshold yet
                 if mean_reward >= threshold and threshold > config["last_length_update_reward"]:
@@ -906,7 +750,8 @@ if __name__ == "__main__":
                     
                     # Close old environments and create new ones with updated episode length
                     env.close()
-                    env_fns = create_diverse_env_population(config["env_id"], config["seed"], config["frame_stack"], config["max_episode_steps"])
+                    env_fns = [make_env(config["env_id"], config["seed"] + i, config["frame_stack"], config["max_episode_steps"]) 
+                              for i in range(config["num_envs"])]
                     env = gymnasium.vector.AsyncVectorEnv(env_fns)
                     
                     # Reset environment and episode tracking variables
@@ -921,23 +766,22 @@ if __name__ == "__main__":
                     print(f"Environment reset with new max episode length: {config['max_episode_steps']}")
                     print(f"====================================\n")
 
-                    # Add entropy boost after episode length increase
-                    if not config.get("entropy_annealing", False):
-                        # Only apply manual boost if not using automatic annealing
-                        config["original_ent_coef"] = agent.ent_coef
-                        config["boosted_ent_coef"] = config["original_ent_coef"] * 1.1  # Reduced from 1.3x to 1.1x
-                        agent.ent_coef = config["boosted_ent_coef"]
-                        config["last_entropy_boost_step"] = global_step
-                        config["entropy_boost_duration"] = 50000  # Reduced from 100000 to 50000
-                        print(f"Applied minimal entropy boost from {config['original_ent_coef']:.4f} to {config['boosted_ent_coef']:.4f} decaying over {config['entropy_boost_duration']} steps")
+                    # Add entropy boost
+                    config["original_ent_coef"] = agent.ent_coef
+                    config["boosted_ent_coef"] = config["original_ent_coef"] * 1.5  # 50% entropy boost
+                    agent.ent_coef = config["boosted_ent_coef"]
+                    config["last_entropy_boost_step"] = global_step
+                    config["entropy_boost_duration"] = 100000  # 100K steps decay period
+                    
+                    print(f"Boosted entropy from {config['original_ent_coef']:.4f} to {config['boosted_ent_coef']:.4f} decaying over {config['entropy_boost_duration']} steps")
                     
                     # Add LR warmup after length change
                     config["lr_warmup_after_length_change"] = True
                     config["lr_warmup_start_step"] = global_step
-                    config["lr_warmup_duration"] = 50000  # Shorter warmup for more aggressive learning
+                    config["lr_warmup_duration"] = 100000  # 100K steps
                     config["lr_warmup_factor"] = 0.5  # Start at 50% of current LR
                     break  # Only apply one threshold update at a time
 
-    print(f"Training finished after {global_step} timesteps.")
+    print(f"Fine-tuning finished after {global_step} timesteps.")
     writer.close() # Close the TensorBoard writer
-    env.close() # Close the vectorized environment
+    env.close() # Close the vectorized environment 

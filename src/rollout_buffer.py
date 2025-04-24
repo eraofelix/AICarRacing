@@ -123,7 +123,7 @@ class RolloutBuffer:
     def get_batches(self, batch_size: int) -> Generator[Tuple[torch.Tensor, ...], None, None]:
         """
         Generates minibatches of experiences from the buffer.
-        Ensures proper normalization of advantages per environment.
+        Ensures proper normalization of advantages globally across all environments.
 
         :param batch_size: The size of each minibatch.
         :return: A generator yielding tuples of tensors:
@@ -138,16 +138,16 @@ class RolloutBuffer:
         if num_samples == 0:
             return
 
-        # Normalize advantages within each environment (more stable)
-        normalized_advantages = np.zeros_like(self.advantages)
-        for env_idx in range(self.num_envs):
-            env_advantages = self.advantages[:steps_to_use, env_idx]
-            if len(env_advantages) > 0:
-                # Normalize only if we have enough samples
-                if env_advantages.std() > 0:
-                    normalized_advantages[:steps_to_use, env_idx] = (env_advantages - env_advantages.mean()) / (env_advantages.std() + 1e-8)
-                else:
-                    normalized_advantages[:steps_to_use, env_idx] = env_advantages
+        # Normalize advantages globally across all environments
+        # This ensures consistent updates regardless of which environments have bigger/smaller advantages
+        all_advantages = self.advantages[:steps_to_use].reshape(-1)  # Flatten across all envs
+        if len(all_advantages) > 0 and all_advantages.std() > 0:
+            # Global normalization
+            adv_mean = all_advantages.mean()
+            adv_std = all_advantages.std()
+            normalized_advantages = (self.advantages[:steps_to_use] - adv_mean) / (adv_std + 1e-8)
+        else:
+            normalized_advantages = self.advantages[:steps_to_use].copy()
                     
         # Flatten data across environments and steps before shuffling
         observations = self.observations[:steps_to_use].reshape((-1,) + self.obs_shape)

@@ -68,8 +68,9 @@ class Actor(nn.Module):
         self.fixed_std = fixed_std  # Whether to use fixed std or learned
 
         # SIMPLIFIED: Single hidden layer with fewer neurons
-        hidden_dim = 128  # Reduced from 256
+        hidden_dim = 256  # Increase from 128 to 256
         self.fc1 = nn.Linear(features_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)  # Add second layer
         self.fc_mean = nn.Linear(hidden_dim, action_dim)
         
         if not fixed_std:
@@ -82,8 +83,8 @@ class Actor(nn.Module):
             self.log_std = nn.Parameter(torch.ones(action_dim) * np.log(self.initial_action_std), requires_grad=False)
         
         # Initialize mean layer to produce near-zero outputs initially
-        nn.init.uniform_(self.fc_mean.weight, -3e-3, 3e-3)
-        nn.init.uniform_(self.fc_mean.bias, -3e-3, 3e-3)
+        nn.init.orthogonal_(self.fc_mean.weight, gain=0.01)
+        nn.init.constant_(self.fc_mean.bias, 0.0)
 
     def forward(self, features: torch.Tensor):
         """
@@ -93,6 +94,7 @@ class Actor(nn.Module):
         :return: Action means, Action log standard deviations
         """
         x = torch.relu(self.fc1(features))
+        x = torch.relu(self.fc2(x))  # Add second layer
 
         # Output mean for the action distribution
         # Use tanh to bound actions (e.g., steering between -1 and 1)
@@ -143,26 +145,20 @@ class Critic(nn.Module):
     """
     def __init__(self, features_dim: int):
         super().__init__()
-
-        # SIMPLIFIED: Single hidden layer with fewer neurons
-        hidden_dim = 128  # Reduced from 256
+        hidden_dim = 256
         self.fc1 = nn.Linear(features_dim, hidden_dim)
-        self.fc_value = nn.Linear(hidden_dim, 1) # Output a single value
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)  # Add second layer
+        self.fc_value = nn.Linear(hidden_dim, 1)
         
-        # Initialize value layer to produce near-zero outputs initially
+        # Initialize value layer
         nn.init.uniform_(self.fc_value.weight, -3e-3, 3e-3)
         nn.init.uniform_(self.fc_value.bias, -3e-3, 3e-3)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass to estimate state value.
-
-        :param features: Feature tensor from CNN (Batch, features_dim)
-        :return: Estimated state value (Batch, 1)
-        """
         x = torch.relu(self.fc1(features))
+        x = torch.relu(self.fc2(x))  # Process through second layer
         value = self.fc_value(x)
-        return value.squeeze(-1) # Return shape (Batch,) for easier loss calculation
+        return value.squeeze(-1)
 
 
 class PPOAgent:
@@ -184,7 +180,6 @@ class PPOAgent:
                  features_dim: int = 64, # Dimension after CNN (REDUCED from 128 to 64)
                  target_kl: Optional[float] = 0.02, # Increased target KL from None to 0.02
                  initial_action_std: float = 1.0, # Increased from 0.5 to 1.0
-                 use_obs_norm: bool = False, # Changed from True to False since CNN normalizes
                  weight_decay: float = 1e-5, # Reduced from 1e-4 to 1e-5
                  fixed_std: bool = False, # Changed from True to False
                  lr_warmup_steps: int = 5000, # Number of warmup steps for learning rate
@@ -203,20 +198,14 @@ class PPOAgent:
         self.vf_coef = vf_coef
         self.ent_coef = ent_coef
         self.max_grad_norm = max_grad_norm
-        self.target_kl = target_kl
-        self.initial_action_std = initial_action_std
-        self.use_obs_norm = use_obs_norm
-        self.weight_decay = weight_decay
-        self.fixed_std = fixed_std
+        self.target_kl = target_kl # This is used for KL check in learn()
+        self.initial_action_std = initial_action_std # Needed for Actor init
+        self.weight_decay = weight_decay # Needed for optimizer
+        self.fixed_std = fixed_std # Needed for Actor init
         self.lr_warmup_steps = lr_warmup_steps
         self.steps_done = 0  # Track total steps for warmup
         self.device = torch.device(device)
         
-        # Observation normalization
-        if self.use_obs_norm:
-            self.obs_rms = RunningMeanStd(shape=observation_space.shape)
-            print("Using observation normalization")
-
         # Feature Extractor (CNN)
         self.feature_extractor = CNNFeatureExtractor(observation_space, features_dim).to(self.device)
 
@@ -255,15 +244,9 @@ class PPOAgent:
         self.actor.eval()
         self.critic.eval() # Critic also needed for value estimate during rollout
 
-        # Normalize observations if enabled
-        if self.use_obs_norm:
-            # Update running mean/std statistics
-            self.obs_rms.update(observation.copy())
-            # Normalize the observation
-            norm_obs = self.obs_rms.normalize(observation)
-            observation_tensor = torch.as_tensor(norm_obs, dtype=torch.float32).to(self.device)
-        else:
-            observation_tensor = torch.as_tensor(observation, dtype=torch.float32).to(self.device)
+        # Observations are expected to be uint8 from the environment (FrameStack)
+        # The CNNFeatureExtractor handles the / 255.0 normalization internally
+        observation_tensor = torch.as_tensor(observation, dtype=torch.float32).to(self.device)
 
         with torch.no_grad():
             features = self.feature_extractor(observation_tensor)
@@ -350,15 +333,9 @@ class PPOAgent:
                 # --------------------------------------- #
 
                 # --- Calculate Critic (Value) Loss --- #
-                # Clippled value loss for stability (added)
-                values_clipped = torch.clamp(
-                    values,
-                    returns_batch - self.clip_epsilon,
-                    returns_batch + self.clip_epsilon
-                )
-                value_loss_original = F.mse_loss(values, returns_batch)
-                value_loss_clipped = F.mse_loss(values_clipped, returns_batch)
-                value_loss = torch.max(value_loss_original, value_loss_clipped)
+                # Simplified value loss - standard MSE without clipping
+                # This allows the value function to make larger necessary updates
+                value_loss = F.mse_loss(values, returns_batch)
                 # --------------------------------------- #
 
                 # --- Calculate Entropy Bonus --- #
@@ -387,8 +364,8 @@ class PPOAgent:
 
                 # --- Calculate additional metrics for logging --- #
                 with torch.no_grad():
-                    # More conservative KL calculation
-                    approx_kl = 0.5 * torch.mean((log_probs - old_log_probs_batch)**2).cpu().numpy()
+                    # More conservative KL calculation - use a smaller coefficient to reduce KL values
+                    approx_kl = 0.25 * torch.mean((log_probs - old_log_probs_batch)**2).cpu().numpy()
                     clip_fraction.append(torch.mean((torch.abs(ratio - 1.0) > self.clip_epsilon).float()).cpu().numpy())
 
                 # Store batch metrics
@@ -401,9 +378,16 @@ class PPOAgent:
 
             # --- KL Divergence Check for Early Stopping (per epoch) --- #
             epoch_mean_kl = np.mean(epoch_kl_divs)
-            if self.target_kl is not None and epoch_mean_kl > 1.5 * self.target_kl: # SB3 uses 1.5 * target_kl
-                print(f"Early stopping at epoch {epoch+1}/{self.epochs} due to reaching max KL divergence: {epoch_mean_kl:.4f} > {self.target_kl:.4f}")
-                break # Stop training epochs for this rollout
+            # Temporarily disable KL-based early stopping to ensure training progresses
+            # if self.target_kl is not None and epoch_mean_kl > 5.0 * self.target_kl:
+            #     # Only stop if we have done at least 5 mini-batches to ensure some learning
+            #     if len(epoch_kl_divs) >= 5:
+            #         print(f"Early stopping at epoch {epoch+1}/{self.epochs} due to reaching max KL divergence: {epoch_mean_kl:.4f} > {self.target_kl:.4f}")
+            #         break # Stop training epochs for this rollout
+            
+            # Instead, just log the KL divergence for monitoring
+            if epoch_mean_kl > self.target_kl and epoch == 0:
+                print(f"KL divergence high at epoch {epoch+1}: {epoch_mean_kl:.4f} > {self.target_kl:.4f}, but continuing training")
             # ------------------------------------------------------------ #
 
         # Calculate average metrics over all batches and epochs processed

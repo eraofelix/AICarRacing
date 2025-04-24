@@ -9,7 +9,7 @@ class CNNFeatureExtractor(nn.Module):
     Outputs a flat feature vector.
     Uses a simplified architecture for better stability in RL.
     """
-    def __init__(self, observation_space: spaces.Box, features_dim: int = 64):  # Reduced from 256 to 64
+    def __init__(self, observation_space: spaces.Box, features_dim: int = 256):  # Increase from 64 to 256
         super().__init__()
         assert isinstance(observation_space, spaces.Box), \
             "CNNFeatureExtractor expects a Box observation space."
@@ -24,13 +24,17 @@ class CNNFeatureExtractor(nn.Module):
         # Define simplified CNN layers (removed BatchNorm)
         self.cnn = nn.Sequential(
             # Input shape: (Batch, n_input_channels, 96, 96)
-            nn.Conv2d(n_input_channels, 16, kernel_size=8, stride=4, padding=0),  # Reduced filters from 32 to 16
+            nn.Conv2d(n_input_channels, 16, kernel_size=8, stride=4, padding=0),
             nn.ReLU(),
+            nn.Dropout2d(0.1),  # Add dropout for better generalization
             
-            nn.Conv2d(16, 32, kernel_size=4, stride=2, padding=0),  # Reduced filters from 64 to 32
+            nn.Conv2d(16, 32, kernel_size=4, stride=2, padding=0),
             nn.ReLU(),
+            nn.Dropout2d(0.1),  # Add dropout for better generalization
             
-            # Removed the third convolutional layer
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=0),
+            nn.ReLU(),
+            nn.Dropout2d(0.1),  # Add dropout for better generalization
             
             nn.Flatten(),
         )
@@ -45,6 +49,7 @@ class CNNFeatureExtractor(nn.Module):
         # Define the final linear layer
         self.linear = nn.Sequential(
             nn.Linear(n_flatten, features_dim),
+            nn.Dropout(0.2),  # Add dropout before final activation
             nn.ReLU()
         )
 
@@ -84,7 +89,7 @@ if __name__ == '__main__':
     obs_space = spaces.Box(low=0, high=255, shape=(k, height, width), dtype=np.uint8)
 
     # Instantiate the CNN model
-    features_dim_output = 64  # Reduced from 256 to 64
+    features_dim_output = 256  # Reduced from 256 to 64
     cnn_model = CNNFeatureExtractor(observation_space=obs_space, features_dim=features_dim_output)
     print(cnn_model)
     print(f"Output features dimension: {cnn_model.features_dim}")
