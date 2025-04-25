@@ -4,6 +4,7 @@ import numpy as np
 import os
 import time
 import argparse
+import matplotlib.pyplot as plt  # Import matplotlib
 
 from src.env_wrappers import GrayScaleObservation, FrameStack, TimeLimit
 from src.ppo_agent import PPOAgent
@@ -14,13 +15,13 @@ config = {
     "env_id": "CarRacing-v3",
     "frame_stack": 4,
     "seed": 42,
-    "max_episode_steps": 600,
+    "max_episode_steps": 1000,
 
     # Agent settings - use 256 features for ppo_simple model
     "features_dim": 256,  # This matches the ppo_simple model architecture
 
     # Evaluation settings
-    "n_eval_episodes": 10,
+    "n_eval_episodes": 100,
     "render_mode": None,  # Set to "human" to watch, None to run faster
 
     # Hardware
@@ -48,10 +49,10 @@ def make_env(env_id, seed, frame_stack, render_mode=None, max_episode_steps=600)
 # --- Main Evaluation Loop --- #
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=str, default="./models/ppo_simple/best_model.pth",
+    parser.add_argument("--model-path", type=str, default="./models/ppo_simple/Evaluated679.pth",
                         help="Path to the trained PPO agent model (.pth file)")
     parser.add_argument("--episodes", type=int, default=config["n_eval_episodes"],
-                        help="Number of episodes to run for evaluation")
+                        help="Number of episodes to run for evaluation (default: 100)")
     parser.add_argument("--seed", type=int, default=config["seed"],
                         help="Random seed for environment reset during evaluation")
     parser.add_argument("--render", action='store_true', default=False,
@@ -171,9 +172,15 @@ if __name__ == "__main__":
     mean_length = np.mean(episode_lengths)
     std_length = np.std(episode_lengths)
 
+    # --- Calculate Floor and Ceiling ---
+    min_reward = np.min(episode_rewards)
+    max_reward = np.max(episode_rewards)
+
     print("\n--- Evaluation Summary ---")
     print(f"Number of episodes: {args.episodes}")
     print(f"Mean Reward: {mean_reward:.2f} +/- {std_reward:.2f}")
+    print(f"Min Reward (Floor): {min_reward:.2f}")
+    print(f"Max Reward (Ceiling): {max_reward:.2f}")
     print(f"Mean Episode Length: {mean_length:.1f} +/- {std_length:.1f}")
     
     # Categorical performance assessment
@@ -192,4 +199,25 @@ if __name__ == "__main__":
     else:
         performance = "Needs Improvement"
         
-    print(f"Performance Rating: {performance}") 
+    print(f"Performance Rating: {performance}")
+
+    # --- Generate Plot ---
+    plt.figure(figsize=(10, 6))
+    plt.plot(episode_rewards, label='Episode Reward', marker='o', linestyle='-', markersize=4)
+    plt.axhline(mean_reward, color='r', linestyle='--', label=f'Mean Reward ({mean_reward:.2f})')
+    plt.axhline(min_reward, color='g', linestyle=':', label=f'Min Reward (Floor) ({min_reward:.2f})')
+    plt.axhline(max_reward, color='b', linestyle=':', label=f'Max Reward (Ceiling) ({max_reward:.2f})')
+    plt.title(f'Evaluation Results ({args.episodes} Episodes)')
+    plt.xlabel('Episode')
+    plt.ylabel('Total Reward')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    
+    # Save the plot
+    plot_filename = f"evaluation_rewards_{os.path.basename(args.model_path).replace('.pth', '')}_{args.episodes}ep.png"
+    plt.savefig(plot_filename)
+    print(f"Plot saved as {plot_filename}")
+
+    # Optionally display the plot
+    plt.show() # Uncomment this line if you want the plot to pop up automatically 
