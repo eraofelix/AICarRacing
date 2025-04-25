@@ -54,7 +54,7 @@ class RolloutBuffer:
         """Add transitions from all parallel environments to the buffer."""
         self.observations[self.pos] = obs
         self.actions[self.pos] = action
-        self.rewards[self.pos] = np.clip(reward, -10.0, 10.0)
+        self.rewards[self.pos] = reward
         self.dones[self.pos] = (terminated | truncated).astype(np.float32)
         self.values[self.pos] = value
         self.log_probs[self.pos] = log_prob
@@ -130,50 +130,19 @@ class RolloutBuffer:
         if len(all_advantages) > 0 and all_advantages.std() > 0:
             adv_mean = all_advantages.mean()
             adv_std = all_advantages.std()
-            normalized_advantages = (self.advantages[:steps_to_use] - adv_mean) / (adv_std + 1e-8)
+            advantages = (self.advantages[:steps_to_use] - adv_mean) / (adv_std + 1e-8)
         else:
-            normalized_advantages = self.advantages[:steps_to_use].copy()
+            advantages = self.advantages[:steps_to_use].copy()
                     
         # Flatten data across environments and steps before shuffling
         observations = self.observations[:steps_to_use].reshape((-1,) + self.obs_shape)
         actions = self.actions[:steps_to_use].reshape((-1, self.action_dim))
         old_log_probs = self.log_probs[:steps_to_use].reshape(-1)
-        advantages = normalized_advantages[:steps_to_use].reshape(-1)
+        advantages = advantages[:steps_to_use].reshape(-1)
         returns = self.returns[:steps_to_use].reshape(-1)
         
-        # Create episode masks to avoid shuffling across episode boundaries
-        episode_masks = np.ones(num_samples, dtype=bool)
-        episode_ends = np.where(self.dones[:steps_to_use].reshape(-1))[0]
-        if len(episode_ends) > 0:
-            for end_pos in episode_ends:
-                if end_pos + 1 < num_samples:
-                    episode_masks[end_pos + 1] = False
-                    
-        # Create shuffled indices respecting episode boundaries
-        continuous_indices = np.arange(num_samples)
-        episode_starts = np.where(~episode_masks)[0]
-        valid_indices = []
-        
-        # Add indices for each continuous episode segment
-        start_idx = 0
-        for end_idx in episode_starts:
-            if end_idx > start_idx:
-                segment_indices = continuous_indices[start_idx:end_idx]
-                np.random.shuffle(segment_indices)
-                valid_indices.extend(segment_indices)
-            start_idx = end_idx + 1
-            
-        # Add last segment if needed
-        if start_idx < num_samples:
-            segment_indices = continuous_indices[start_idx:num_samples]
-            np.random.shuffle(segment_indices)
-            valid_indices.extend(segment_indices)
-            
-        indices = np.array(valid_indices)
-        
-        # If we don't have enough indices, fall back to regular shuffling
-        if len(indices) < 0.5 * num_samples:
-            indices = np.random.permutation(num_samples)
+        # Simplified shuffling: Shuffle all indices
+        indices = np.random.permutation(num_samples)
 
         start_idx = 0
         while start_idx < len(indices):
