@@ -264,32 +264,32 @@ class PPOAgent:
             for batch in rollout_buffer.get_batches(self.batch_size):
                 obs_batch, actions_batch, old_log_probs_batch, advantages_batch, returns_batch = batch
 
-                # Use autocast for mixed precision
                 with torch.cuda.amp.autocast():
-                    # Forward pass for current policy
-                    features = self.feature_extractor(obs_batch)
+                    # Normalize observations before feature extraction
+                    obs_batch_norm = obs_batch.float() / 255.0 # RESTORED normalization
+                    features = self.feature_extractor(obs_batch_norm)
                     values = self.critic(features)
                     log_probs, entropy = self.actor.evaluate_actions(features, actions_batch)
 
-                    # Normalize advantages
-                    advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
+                # Normalize advantages
+                advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
 
-                    # Calculate Actor (Policy) Loss
-                    ratio = torch.exp(log_probs - old_log_probs_batch)
-                    ratio = torch.clamp(ratio, 0.0, 5.0)
-                    
-                    policy_loss_1 = advantages_batch * ratio
-                    policy_loss_2 = advantages_batch * torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
-                    policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
+                # Calculate Actor (Policy) Loss
+                ratio = torch.exp(log_probs - old_log_probs_batch)
+                ratio = torch.clamp(ratio, 0.0, 5.0)
+                
+                policy_loss_1 = advantages_batch * ratio
+                policy_loss_2 = advantages_batch * torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
+                policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
 
-                    # Calculate Critic (Value) Loss
-                    value_loss = F.mse_loss(values, returns_batch)
+                # Calculate Critic (Value) Loss
+                value_loss = F.mse_loss(values, returns_batch)
 
-                    # Calculate Entropy Bonus
-                    entropy_loss = -torch.mean(entropy)
+                # Calculate Entropy Bonus
+                entropy_loss = -torch.mean(entropy)
 
-                    # Combine Losses
-                    loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+                # Combine Losses
+                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
                 # Optimization Steps with mixed precision
                 self.actor_optimizer.zero_grad()
@@ -368,8 +368,9 @@ class PPOAgent:
             for batch in rollout_buffer.get_batches(self.batch_size):
                 obs_batch, actions_batch, old_log_probs_batch, advantages_batch, returns_batch = batch
 
-                # Forward pass for current policy
-                features = self.feature_extractor(obs_batch)
+                # Normalize observations before feature extraction
+                obs_batch_norm = obs_batch.float() / 255.0 # RESTORED normalization
+                features = self.feature_extractor(obs_batch_norm)
                 values = self.critic(features)
                 log_probs, entropy = self.actor.evaluate_actions(features, actions_batch)
 

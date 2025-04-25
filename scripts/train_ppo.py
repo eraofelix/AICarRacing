@@ -24,16 +24,16 @@ config = {
     "seed": 42,
     
     # PPO Core Parameters
-    "total_timesteps": 5_000_000,
-    "learning_rate": 5e-7,
+    "total_timesteps": 6_000_000,
+    "learning_rate": 1e-6,  # Reverted to value used for 680-score run
     "buffer_size": 2048,
     "batch_size": 128,    # Increased from 64 for better GPU utilization, but not as high as 256
-    "ppo_epochs": 12,
+    "ppo_epochs": 6,      # Reverted
     "gamma": 0.99,
     "gae_lambda": 0.95,
-    "clip_epsilon": 0.1,
-    "vf_coef": 0.5,
-    "ent_coef": 0.005,
+    "clip_epsilon": 0.08, # Reverted
+    "vf_coef": 1.0,       # Reverted
+    "ent_coef": 0.008,    # Reverted
     "max_grad_norm": 0.5,
     "target_kl": 0.2,
     "features_dim": 256,
@@ -41,14 +41,14 @@ config = {
     # Reward shaping
     "use_reward_shaping": True,
     "velocity_reward_weight": 0.005,
-    "survival_reward": 0.1,
-    "track_penalty": 5.0,
+    "survival_reward": 0.05, # Reverted
+    "track_penalty": 5.0,   # Reverted
     "steering_smooth_weight": 0.3,
-    "acceleration_while_turning_penalty_weight": 0.5,
+    "acceleration_while_turning_penalty_weight": 0.8,
     
     # Performance optimizations - CPU-friendly settings
     "torch_num_threads": 7,   # Leave one core free for system tasks
-    "mixed_precision": True,  # Use mixed precision for GPU acceleration
+    "mixed_precision": False, # SETTING TO FALSE to avoid RuntimeError
     "pin_memory": True,       # Speed up data transfer to GPU
     "async_envs": True,       # Use async environments which are more CPU efficient
     
@@ -59,8 +59,8 @@ config = {
     "log_dir": "./logs/ppo_simple",
     
     # Checkpoint to load (set to None to start fresh training)
-    "checkpoint_path": "./models/ppo_simple/best_model.pth",  # Change to your checkpoint path or None
-    
+    #"checkpoint_path": "./models/ppo_simple/best_model.pth",  # Change to your checkpoint path or None
+    "checkpoint_path": "./models/ppo_simple/Evaluated679.pth",
     # Hardware
     "device": "cuda" if torch.cuda.is_available() else "cpu",
 }
@@ -304,13 +304,17 @@ def load_checkpoint(agent, checkpoint_path, config, device):
         agent.feature_extractor.load_state_dict(checkpoint['feature_extractor_state_dict'])
         agent.actor.load_state_dict(checkpoint['actor_state_dict'])
         agent.critic.load_state_dict(checkpoint['critic_state_dict'])
-        
+
         # Optionally load optimizer states if they exist
-        if 'actor_optimizer_state_dict' in checkpoint and 'critic_optimizer_state_dict' in checkpoint:
-            agent.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
-            agent.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
-            print("Loaded optimizer states")
-        
+        # ---> COMMENTED OUT AGAIN to test KL stability <----
+        # if 'actor_optimizer_state_dict' in checkpoint and 'critic_optimizer_state_dict' in checkpoint:
+        #     agent.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
+        #     agent.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
+        #     print("Loaded optimizer states")
+        # else:
+        #     print("Optimizer states not found in checkpoint.")
+        print("Skipping optimizer state loading.")
+
         # Get global step from checkpoint
         global_step = checkpoint.get('global_step', 0)
         print(f"Resuming from step {global_step}")
@@ -322,7 +326,7 @@ def load_checkpoint(agent, checkpoint_path, config, device):
         return best_mean_reward, global_step
     except Exception as e:
         print(f"Error loading checkpoint: {e}")
-        return None, 0
+        return -np.inf, 0 # Return default values on error
 
 # --- Main Training Loop with Performance Optimizations --- #
 if __name__ == "__main__":
@@ -391,7 +395,14 @@ if __name__ == "__main__":
     global_step = 0
     checkpoint_path = args.checkpoint if args.checkpoint else config["checkpoint_path"]
     if checkpoint_path:
-        best_mean_reward, global_step = load_checkpoint(agent, checkpoint_path, config, config["device"])
+        # Load checkpoint and retrieve reward and step count
+        loaded_reward, loaded_step = load_checkpoint(agent, checkpoint_path, config, config["device"])
+        if loaded_reward is not None:
+            best_mean_reward = loaded_reward
+            global_step = loaded_step
+            # Set the agent's internal step counter for the LR schedule
+            agent.steps_done = global_step
+            print(f"Set agent steps_done to {agent.steps_done} for LR schedule.")
     
     # Create rollout buffer with optimized settings
     buffer_size_per_env = config["buffer_size"] // config["num_envs"]
@@ -512,7 +523,10 @@ if __name__ == "__main__":
                 metrics = agent.learn_mixed_precision(buffer, scaler)
             else:
                 metrics = agent.learn(buffer)
-            
+
+            # Update learning rate schedule
+            current_lr = agent.update_learning_rate(config['total_timesteps'])
+
             # Update rollout counter
             num_rollouts += 1
             
@@ -541,34 +555,43 @@ if __name__ == "__main__":
                 writer.add_scalar("losses/entropy", metrics["entropy_loss"], global_step)
                 writer.add_scalar("losses/approx_kl", metrics["approx_kl"], global_step)
                 
-                # Log reward components if available - NEW APPROACH
-                for i in range(config["num_envs"]):
-                    if dones[i]: # Check if the episode ended for this environment
-                        env_info = infos[i] # Get the info dict for this env
-                        print(f"DEBUG: info for completed env {i}: {env_info}") # Add new debug print
-                        
-                        # Log standard episode stats if available
-                        if "episode" in env_info:
-                            writer.add_scalar(f"charts/episode_reward_env_{i}", env_info["episode"]["r"], global_step)
-                            writer.add_scalar(f"charts/episode_length_env_{i}", env_info["episode"]["l"], global_step)
+                # Log reward components safely for finished environments
+                if "_final_info" in infos:
+                    final_infos = infos.get("final_info") # Get the final_info dictionary
+                    if final_infos is not None:
+                        # Filter for environments that actually finished and have info
+                        finished_mask = infos.get("_final_info")
+                        if finished_mask is not None:
+                            valid_final_infos = final_infos[finished_mask]
+                            env_indices = np.where(finished_mask)[0]
 
-                        # Log custom reward/penalty components if available
-                        if 'episode_velocity_rewards' in env_info:
-                            writer.add_scalar(f"rewards/velocity_rewards_env_{i}", env_info['episode_velocity_rewards'], global_step)
-                        if 'episode_survival_rewards' in env_info:
-                            writer.add_scalar(f"rewards/survival_rewards_env_{i}", env_info['episode_survival_rewards'], global_step)
-                        if 'episode_track_penalties' in env_info:
-                            writer.add_scalar(f"penalties/track_penalties_env_{i}", env_info['episode_track_penalties'], global_step)
-                        if 'episode_steering_penalties' in env_info:
-                            writer.add_scalar(f"penalties/steering_penalties_env_{i}", env_info['episode_steering_penalties'], global_step)
-                        if 'episode_acceleration_while_turning_penalties' in env_info:
-                            writer.add_scalar(f"penalties/acceleration_while_turning_env_{i}", env_info['episode_acceleration_while_turning_penalties'], global_step)
-                        if 'steps_off_track' in env_info:
-                            writer.add_scalar(f"driving/steps_off_track_env_{i}", env_info['steps_off_track'], global_step)
-                            if 'episode' in env_info and 'l' in env_info['episode'] and env_info['episode']['l'] > 0:
-                                ep_len = env_info['episode']['l']
-                                off_track_pct = 100 * env_info['steps_off_track'] / ep_len
-                                writer.add_scalar(f"driving/percent_off_track_env_{i}", off_track_pct, global_step)
+                            for i, env_info in enumerate(valid_final_infos):
+                                env_idx = env_indices[i] # Get the original environment index
+                                if env_info is not None:
+                                    print(f"DEBUG: Logging info for completed env {env_idx}: {env_info}")
+
+                                    # Log standard episode stats if available
+                                    if "episode" in env_info:
+                                        writer.add_scalar(f"charts/episode_reward_env_{env_idx}", env_info["episode"]["r"], global_step)
+                                        writer.add_scalar(f"charts/episode_length_env_{env_idx}", env_info["episode"]["l"], global_step)
+
+                                    # Log custom reward/penalty components if available
+                                    if 'episode_velocity_rewards' in env_info:
+                                        writer.add_scalar(f"rewards/velocity_rewards_env_{env_idx}", env_info['episode_velocity_rewards'], global_step)
+                                    if 'episode_survival_rewards' in env_info:
+                                        writer.add_scalar(f"rewards/survival_rewards_env_{env_idx}", env_info['episode_survival_rewards'], global_step)
+                                    if 'episode_track_penalties' in env_info:
+                                        writer.add_scalar(f"penalties/track_penalties_env_{env_idx}", env_info['episode_track_penalties'], global_step)
+                                    if 'episode_steering_penalties' in env_info:
+                                        writer.add_scalar(f"penalties/steering_penalties_env_{env_idx}", env_info['episode_steering_penalties'], global_step)
+                                    if 'episode_acceleration_while_turning_penalties' in env_info:
+                                        writer.add_scalar(f"penalties/acceleration_while_turning_env_{env_idx}", env_info['episode_acceleration_while_turning_penalties'], global_step)
+                                    if 'steps_off_track' in env_info:
+                                        writer.add_scalar(f"driving/steps_off_track_env_{env_idx}", env_info['steps_off_track'], global_step)
+                                        if 'episode' in env_info and 'l' in env_info['episode'] and env_info['episode']['l'] > 0:
+                                            ep_len = env_info['episode']['l']
+                                            off_track_pct = 100 * env_info['steps_off_track'] / ep_len
+                                            writer.add_scalar(f"driving/percent_off_track_env_{env_idx}", off_track_pct, global_step)
                 
                 # Save best model
                 if mean_reward > best_mean_reward:
@@ -593,8 +616,6 @@ if __name__ == "__main__":
                     'feature_extractor_state_dict': agent.feature_extractor.state_dict(),
                     'actor_state_dict': agent.actor.state_dict(),
                     'critic_state_dict': agent.critic.state_dict(),
-                    'actor_optimizer_state_dict': agent.actor_optimizer.state_dict(),
-                    'critic_optimizer_state_dict': agent.critic_optimizer.state_dict(),
                     'global_step': global_step,
                     'config': config,
                     'mean_reward': best_mean_reward,
