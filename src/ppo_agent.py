@@ -180,18 +180,22 @@ class PPOAgent:
         else:
             print(f"Using learned action std (initial: {self.initial_action_std})")
 
-    def act(self, observation: np.ndarray):
+    def act(self, observation: torch.Tensor):
         """
         Select an action based on the current observation, also return value estimate.
 
-        :param observation: Current environment observation (k, H, W)
+        :param observation: Current environment observation (Batch, k, H, W) as tensor
         :return: action (np.ndarray), value (np.ndarray), log_prob (np.ndarray)
         """
         self.feature_extractor.eval()
         self.actor.eval()
         self.critic.eval()
 
-        observation_tensor = torch.as_tensor(observation, dtype=torch.float32).to(self.device)
+        # If observation is already a tensor on the right device, skip conversion
+        if not isinstance(observation, torch.Tensor):
+            observation_tensor = torch.as_tensor(observation, dtype=torch.float32).to(self.device)
+        else:
+            observation_tensor = observation
 
         with torch.no_grad():
             features = self.feature_extractor(observation_tensor)
@@ -232,6 +236,114 @@ class PPOAgent:
             
         self.lr = current_lr
         return current_lr
+
+    def learn_mixed_precision(self, rollout_buffer, scaler):
+        """
+        Update the agent's networks using mixed precision for faster training on GPUs.
+        
+        :param rollout_buffer: Buffer containing collected experiences
+        :param scaler: GradScaler for mixed precision training
+        :return: Dictionary of training metrics
+        """
+        self.feature_extractor.train()
+        self.actor.train()
+        self.critic.train()
+
+        # Store metrics across epochs and batches
+        all_policy_losses = []
+        all_value_losses = []
+        all_entropy_losses = []
+        all_kl_divs = []
+        clip_fraction = []
+
+        # Loop for optimization epochs
+        for epoch in range(self.epochs):
+            epoch_kl_divs = []
+            
+            # Iterate over batches from the rollout buffer
+            for batch in rollout_buffer.get_batches(self.batch_size):
+                obs_batch, actions_batch, old_log_probs_batch, advantages_batch, returns_batch = batch
+
+                # Use autocast for mixed precision
+                with torch.cuda.amp.autocast():
+                    # Forward pass for current policy
+                    features = self.feature_extractor(obs_batch)
+                    values = self.critic(features)
+                    log_probs, entropy = self.actor.evaluate_actions(features, actions_batch)
+
+                    # Normalize advantages
+                    advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
+
+                    # Calculate Actor (Policy) Loss
+                    ratio = torch.exp(log_probs - old_log_probs_batch)
+                    ratio = torch.clamp(ratio, 0.0, 5.0)
+                    
+                    policy_loss_1 = advantages_batch * ratio
+                    policy_loss_2 = advantages_batch * torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
+                    policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
+
+                    # Calculate Critic (Value) Loss
+                    value_loss = F.mse_loss(values, returns_batch)
+
+                    # Calculate Entropy Bonus
+                    entropy_loss = -torch.mean(entropy)
+
+                    # Combine Losses
+                    loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+
+                # Optimization Steps with mixed precision
+                self.actor_optimizer.zero_grad()
+                self.critic_optimizer.zero_grad()
+                
+                # Use scaler for gradient scaling
+                scaler.scale(loss).backward()
+                
+                # Gradient clipping with the scaler
+                scaler.unscale_(self.actor_optimizer)
+                scaler.unscale_(self.critic_optimizer)
+                
+                torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    itertools.chain(self.critic.parameters(), self.feature_extractor.parameters()),
+                    self.max_grad_norm
+                )
+
+                # Apply gradients with the scaler
+                scaler.step(self.actor_optimizer)
+                scaler.step(self.critic_optimizer)
+                scaler.update()
+
+                # Calculate additional metrics for logging (outside of autocast)
+                with torch.no_grad():
+                    approx_kl = 0.25 * torch.mean((log_probs - old_log_probs_batch)**2).cpu().numpy()
+                    clip_fraction.append(torch.mean((torch.abs(ratio - 1.0) > self.clip_epsilon).float()).cpu().numpy())
+
+                # Store batch metrics
+                all_policy_losses.append(policy_loss.item())
+                all_value_losses.append(value_loss.item())
+                all_entropy_losses.append(entropy_loss.item())
+                all_kl_divs.append(approx_kl)
+                epoch_kl_divs.append(approx_kl)
+
+            # KL Divergence Check (monitoring only)
+            epoch_mean_kl = np.mean(epoch_kl_divs)
+            if epoch_mean_kl > self.target_kl and epoch == 0:
+                print(f"KL divergence high at epoch {epoch+1}: {epoch_mean_kl:.4f} > {self.target_kl:.4f}, but continuing training")
+
+        # Calculate average metrics over all batches and epochs processed
+        avg_policy_loss = np.mean(all_policy_losses)
+        avg_value_loss = np.mean(all_value_losses)
+        avg_entropy_loss = np.mean(all_entropy_losses)
+        avg_approx_kl = np.mean(all_kl_divs)
+        avg_clip_fraction = np.mean(clip_fraction)
+
+        return {
+            "policy_loss": avg_policy_loss,
+            "value_loss": avg_value_loss,
+            "entropy_loss": avg_entropy_loss,
+            "approx_kl": avg_approx_kl,
+            "clip_fraction": avg_clip_fraction,
+        }
 
     def learn(self, rollout_buffer):
         """
