@@ -265,14 +265,14 @@ class PPOAgent:
                 obs_batch, actions_batch, old_log_probs_batch, advantages_batch, returns_batch = batch
 
                 with torch.cuda.amp.autocast():
-                    # Normalize observations before feature extraction - REMOVED, handled in CNNModel
-                    # obs_batch_norm = obs_batch.float() / 255.0 
-                    features = self.feature_extractor(obs_batch) # Use raw obs_batch
+                    # Normalize observations before feature extraction
+                    obs_batch_norm = obs_batch.float() / 255.0 # RESTORED normalization
+                    features = self.feature_extractor(obs_batch_norm)
                     values = self.critic(features)
                     log_probs, entropy = self.actor.evaluate_actions(features, actions_batch)
 
-                # Normalize advantages - REMOVED, handled globally in RolloutBuffer
-                # advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
+                # Normalize advantages
+                advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
 
                 # Calculate Actor (Policy) Loss
                 ratio = torch.exp(log_probs - old_log_probs_batch)
@@ -368,14 +368,14 @@ class PPOAgent:
             for batch in rollout_buffer.get_batches(self.batch_size):
                 obs_batch, actions_batch, old_log_probs_batch, advantages_batch, returns_batch = batch
 
-                # Normalize observations before feature extraction - REMOVED, handled in CNNModel
-                # obs_batch_norm = obs_batch.float() / 255.0 
-                features = self.feature_extractor(obs_batch) # Use raw obs_batch
+                # Normalize observations before feature extraction
+                obs_batch_norm = obs_batch.float() / 255.0 # RESTORED normalization
+                features = self.feature_extractor(obs_batch_norm)
                 values = self.critic(features)
                 log_probs, entropy = self.actor.evaluate_actions(features, actions_batch)
 
-                # Normalize advantages - REMOVED, handled globally in RolloutBuffer
-                # advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
+                # Normalize advantages
+                advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
 
                 # Calculate Actor (Policy) Loss
                 ratio = torch.exp(log_probs - old_log_probs_batch)
