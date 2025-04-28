@@ -43,7 +43,7 @@ python scripts/train_ppo.py
 This will:
 - Create an agent with a CNN that processes images from the car's perspective
 - Train the agent using PPO, optimizing for rewards from staying on track and driving fast
-- Save model checkpoints during training
+- Save model checkpoints during training at every 10 rollouts
 - Log training progress for visualization with TensorBoard
 
 Monitor training progress:
@@ -51,6 +51,13 @@ Monitor training progress:
 ```bash
 tensorboard --logdir=logs
 ```
+
+### Saved Agents
+
+In BestSavedModels folder are the two best agents (Evaluated641.pth and Evaluated679.pth) that I was able to train with this script. Lots of room for improvement on both.
+Use either as the path if you want to just test the evaluation and see the models without having to build your own.
+Both should perform around 650-700 with the current evaluation settings. 
+Both took ~6 hours of training using the train_ppo.py script. Only minor reward shape differences between them. 
 
 ### Evaluating an Agent
 

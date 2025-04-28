@@ -13,6 +13,7 @@ dependencies:
   - pytorch
   - torchvision
   - torchaudio
+  - pandas  
   - pytorch-cuda=11.8 # Ensure this matches your CUDA version
   - pygame
   - pyglet

@@ -17,11 +17,11 @@ config = {
     # Environment settings
     "env_id": "CarRacing-v3",
     "frame_stack": 4,
-    "seed": 42,
+    "seed": 42, # Seed used for all evaluation graphs
     "max_episode_steps": 1000, # Max steps per evaluation episode
 
     # Agent settings (Required for PPOAgent initialization, even if not used for eval logic)
-    "features_dim": 256,          # Feature dimension (MUST match trained model)
+    "features_dim": 256,          # Feature dimension (MUST match trained model or else this will break)
     "learning_rate": 1e-4,        # Placeholder LR
     "gamma": 0.99,                # Placeholder gamma
     "gae_lambda": 0.95,            # Placeholder lambda
@@ -39,7 +39,7 @@ config = {
     "min_learning_rate": 1e-7,    # Placeholder min LR
 
     # Evaluation settings
-    "n_eval_episodes": 10,        # Number of episodes to run for evaluation
+    "n_eval_episodes": 100,        # Number of episodes to run for evaluation (100 for all evaluation graphs)
     "render_mode": None,       # Set to "human" to watch the agent play
 
     # Hardware
@@ -92,13 +92,11 @@ def make_env(env_id: str, seed: int, frame_stack: int, render_mode: typing.Union
 if __name__ == "__main__":
     # --- Hardcode Model Path Here --- #
     # <<< REPLACE THIS WITH THE ACTUAL PATH TO YOUR .pth FILE >>>
-    HARDCODED_MODEL_PATH = "./models/ppo_carracing/prevbest630.pth"
+    HARDCODED_MODEL_PATH = "./BestSavedModels/Evaluated679.pth"
     # ---------------------------------- #
 
-    # --- Argument Parsing --- (Removed --model-path)
+    # --- Argument Parsing --- 
     parser = argparse.ArgumentParser(description="Evaluate a trained PPO agent on CarRacing-v3")
-    # parser.add_argument("--model-path", type=str, required=True,
-    #                     help="Path to the trained PPO agent model checkpoint (.pth file).") # Removed
     parser.add_argument("--episodes", type=int, default=config["n_eval_episodes"],
                         help=f"Number of episodes to run for evaluation (default: {config['n_eval_episodes']}).")
     parser.add_argument("--seed", type=int, default=config["seed"],
@@ -315,6 +313,6 @@ if __name__ == "__main__":
         print(f"\nError saving plot: {e}")
 
     # --- Display Plot ---
-    # Optionally display the plot to the user
+    # Optionally display the plot
     plt.show()
     # print("Plot display complete.") 

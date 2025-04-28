@@ -63,10 +63,6 @@ class RolloutBuffer:
         """Resets the buffer position and the full flag. Does not clear data."""
         self.pos = 0
         self.full = False
-        # Optionally reset calculated fields if needed, but advantage/return recalculation handles it
-        # self.advantages.fill(0)
-        # self.returns.fill(0)
-        # self.episode_starts.fill(0)
 
     def add(self,
             obs: np.ndarray,
@@ -91,7 +87,7 @@ class RolloutBuffer:
         # Store data at the current position
         self.observations[self.pos] = obs
         self.actions[self.pos] = action
-        # Clip rewards for stability (optional but common)
+        # Clip rewards for stability
         self.rewards[self.pos] = np.clip(reward, -10.0, 10.0)
         self.dones[self.pos] = (terminated | truncated).astype(np.float32) # Store combined done signal
         self.values[self.pos] = value
@@ -154,11 +150,6 @@ class RolloutBuffer:
         # R_t = A_t + V(s_t)
         self.returns = self.advantages + self.values
 
-        # Note: GAE calculation implicitly handles episode boundaries because
-        # next_non_terminal becomes 0 when an episode ends, stopping the
-        # propagation of future advantages/rewards.
-        # The `episode_starts` array is primarily for the batch generator.
-
     def get_batches(self, batch_size: int) -> Generator[Tuple[torch.Tensor, ...], None, None]:
         """
         Generates minibatches of experiences from the buffer for PPO updates.
@@ -203,10 +194,6 @@ class RolloutBuffer:
         # Create indices for shuffling
         indices = np.arange(num_samples)
         np.random.shuffle(indices) # Simple random shuffling
-        # Note: More complex shuffling respecting episode boundaries was removed for simplicity,
-        # as standard PPO often shuffles randomly across the entire batch.
-        # If respecting boundaries is critical, the previous boundary-aware shuffling logic
-        # using `episode_starts` could be reinstated here.
 
         # --- Batch Generation ---
         start_idx = 0

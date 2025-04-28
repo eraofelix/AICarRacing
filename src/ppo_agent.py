@@ -142,7 +142,6 @@ class Critic(nn.Module):
         self.fc_value = nn.Linear(hidden_dim, 1)
 
         # Initialize the value layer weights/biases with small values
-        # (Often suggested for value function final layers)
         nn.init.uniform_(self.fc_value.weight, -3e-3, 3e-3)
         nn.init.uniform_(self.fc_value.bias, -3e-3, 3e-3)
 
@@ -192,7 +191,7 @@ class PPOAgent:
         self.action_dim = action_space.shape[0]
         self.device = torch.device(device)
 
-        # --- Extract Hyperparameters from Config (with defaults for safety) ---
+        # --- Extract Hyperparameters from Config (with defaults for safety otherwise things break) ---
         self.initial_lr = config.get("learning_rate", 1e-4)
         self.lr = self.initial_lr # Current learning rate starts at initial
         self.gamma = config.get("gamma", 0.99)
@@ -364,27 +363,16 @@ class PPOAgent:
                     values = self.critic(features)
                     log_probs, entropy = self.actor.evaluate_actions(features, actions_batch)
 
-                    # Normalize advantages per batch (common practice)
-                    # advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
-                    # Note: Advantage normalization now happens globally in RolloutBuffer.get_batches
 
                     # --- PPO Loss Calculation ---
                     # Ratio of new policy probability to old policy probability
                     ratio = torch.exp(log_probs - old_log_probs_batch)
-                    # Clamp ratio for stability, preventing extreme values if log_probs diverge significantly
-                    # ratio = torch.clamp(ratio, 0.1, 10.0)
 
                     # Clipped Surrogate Objective (Policy Loss)
                     policy_loss_1 = advantages_batch * ratio
                     policy_loss_2 = advantages_batch * torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
                     policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
 
-                    # Value Function Loss (Mean Squared Error)
-                    # Optional: Clip value loss (not done here, but sometimes used)
-                    # value_pred_clipped = old_values_batch + torch.clamp(values - old_values_batch, -self.clip_epsilon, self.clip_epsilon)
-                    # value_loss_clipped = F.mse_loss(value_pred_clipped, returns_batch)
-                    # value_loss_unclipped = F.mse_loss(values, returns_batch)
-                    # value_loss = 0.5 * torch.max(value_loss_unclipped, value_loss_clipped).mean()
                     value_loss = F.mse_loss(values, returns_batch)
 
                     # Entropy Bonus (encourages exploration)
@@ -438,7 +426,7 @@ class PPOAgent:
             epoch_mean_kl = np.mean(epoch_kl_divs)
             if self.target_kl is not None and epoch_mean_kl > self.target_kl * 1.5:
                 print(f"Warning: Early stopping PPO epoch {epoch+1} due to high KL divergence: {epoch_mean_kl:.4f} > {self.target_kl*1.5:.4f}")
-                break # Uncomment to enable KL-based early stopping
+                break #if kl divergence is too high, break the loop
 
         # --- Return Averaged Metrics ---
         avg_metrics = {
@@ -483,9 +471,6 @@ class PPOAgent:
                 # Get current value estimates and policy evaluation
                 values = self.critic(features)
                 log_probs, entropy = self.actor.evaluate_actions(features, actions_batch)
-
-                # Normalize advantages per batch (now done globally in buffer)
-                # advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
 
                 # --- PPO Loss Calculation ---
                 # Ratio of new policy probability to old policy probability
@@ -568,7 +553,6 @@ class PPOAgent:
             'feature_extractor_state_dict': self.feature_extractor.state_dict(),
             'actor_state_dict': self.actor.state_dict(),
             'critic_state_dict': self.critic.state_dict(),
-            # Add other components if needed, e.g., agent hyperparameters
         }, path)
         print("Model components saved.")
 

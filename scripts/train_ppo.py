@@ -15,14 +15,17 @@ from src.ppo_agent import PPOAgent
 from src.rollout_buffer import RolloutBuffer
 
 # --- Configuration --- #
-# Central configuration dictionary for training parameters
+# Config for the training script. This config was used for both saved models.
+# Config is optimized for my computer with a Ryzen 7 7800X3D (8 Cores), 32 GB RAM, and RTX 3080 GPU.
+# num_envs, async_envs, batch_size, buffer_size, pin_memory, torch_num_threads, and mixed_precision are all optimized for my computer, they will likely need to be changed for different hardware.
+
 config = {
     # Environment
     "env_id": "CarRacing-v3",           # ID for the Gymnasium environment
     "frame_stack": 4,                   # Number of consecutive frames to stack as input
-    "num_envs": 8,                      # Number of parallel environments for vectorized training
+    "num_envs": 8,                      # Number of parallel environments for vectorized training (Change based on your CPU/GPU)
     "max_episode_steps": 1000,          # Maximum steps allowed per episode
-    "seed": 42,                         # Random seed for reproducibility
+    "seed": 42,                         # Seed used for all evaluations and model training
 
     # PPO Core Parameters
     "total_timesteps": 6_000_000,       # Total number of training steps across all environments
@@ -369,7 +372,7 @@ def load_checkpoint(agent: PPOAgent, checkpoint_path: str, config: dict, device:
         agent.critic.load_state_dict(checkpoint['critic_state_dict'])
         print("Model weights loaded successfully.")
 
-        # Optionally load optimizer states (commented out for stability testing)
+        # Optionally load optimizer states (commented out for stability because this broke the model training)
         # if 'actor_optimizer_state_dict' in checkpoint and 'critic_optimizer_state_dict' in checkpoint:
         #     agent.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
         #     agent.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
