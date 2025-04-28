@@ -92,7 +92,7 @@ def make_env(env_id: str, seed: int, frame_stack: int, render_mode: typing.Union
 if __name__ == "__main__":
     # --- Hardcode Model Path Here --- #
     # <<< REPLACE THIS WITH THE ACTUAL PATH TO YOUR .pth FILE >>>
-    HARDCODED_MODEL_PATH = "./BestSavedModels/Evaluated679.pth"
+    HARDCODED_MODEL_PATH = "./BestSavedModels/Evaluated641.pth"
     # ---------------------------------- #
 
     # --- Argument Parsing --- 
@@ -254,6 +254,8 @@ if __name__ == "__main__":
     median_reward = np.median(episode_rewards)
     min_reward = np.min(episode_rewards)
     max_reward = np.max(episode_rewards)
+    lower_quartile = np.percentile(episode_rewards, 25)
+    upper_quartile = np.percentile(episode_rewards, 75)
     mean_length = np.mean(episode_lengths)
     std_length = np.std(episode_lengths)
 
@@ -261,6 +263,8 @@ if __name__ == "__main__":
     print(f"Number of Episodes: {config['n_eval_episodes']}")
     print(f"Mean Reward: {mean_reward:.2f} +/- {std_reward:.2f}")
     print(f"Median Reward: {median_reward:.2f}")
+    print(f"Lower Quartile Reward: {lower_quartile:.2f}")
+    print(f"Upper Quartile Reward: {upper_quartile:.2f}")
     print(f"Min Reward (Floor): {min_reward:.2f}")
     print(f"Max Reward (Ceiling): {max_reward:.2f}")
     print(f"Mean Episode Length: {mean_length:.1f} +/- {std_length:.1f}")
@@ -287,8 +291,11 @@ if __name__ == "__main__":
     plt.plot(episode_rewards, label='Episode Reward', marker='o', linestyle='-', markersize=4, alpha=0.7)
     # Add lines for mean, min, max
     plt.axhline(mean_reward, color='r', linestyle='--', label=f'Mean Reward ({mean_reward:.2f})')
+    plt.axhline(median_reward, color='y', linestyle='--', label=f'Median Reward ({median_reward:.2f})')
     plt.axhline(min_reward, color='g', linestyle=':', label=f'Min Reward ({min_reward:.2f})')
     plt.axhline(max_reward, color='b', linestyle=':', label=f'Max Reward ({max_reward:.2f})')
+    plt.axhline(lower_quartile, color='m', linestyle=':', label=f'Lower Quartile ({lower_quartile:.2f})')
+    plt.axhline(upper_quartile, color='c', linestyle=':', label=f'Upper Quartile ({upper_quartile:.2f})')
     if args.random:
         plt.title(f'Random Agent Evaluation Results ({config["n_eval_episodes"]} Episodes)')
     else:
