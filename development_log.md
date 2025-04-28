@@ -234,4 +234,22 @@ This document tracks the development steps for creating a Reinforcement Learning
 *   Monitor extended training progress through higher reward thresholds
 *   Implement evaluation suite to test model generalization across different tracks
 *   Create visualization tools for agent behavior analysis
-*   Develop a simple API for deploying trained models in various applications 
+*   Develop a simple API for deploying trained models in various applications
+
+
+ Hyperparameter Tuning for KL Stability (Fine-tuning)
+
+**Goal:** Address high and spiking KL divergence observed during fine-tuning while aiming for conservative performance improvements.
+
+**Proposed Changes (Configuration in `scripts/train_ppo.py`):**
+
+*   **`learning_rate`**: `1e-6` -> `2e-7`
+    *   *Reason:* Reduce the step size of policy updates to prevent large, destabilizing changes.
+*   **`clip_epsilon`**: `0.08` -> `0.06`
+    *   *Reason:* Further restrict the maximum change allowed between the old and new policy per update, enforcing more conservative steps.
+*   **`batch_size`**: `128` -> `256`
+    *   *Reason:* Use a larger batch of data for gradient calculation, leading to more stable gradient estimates and smoother updates.
+*   **`ppo_epochs`**: `6` -> `4`
+    *   *Reason:* Reduce the number of times the agent trains on the same rollout data, mitigating overfitting to specific trajectories within a batch.
+
+**Rationale:** These combined changes aim to make the learning process significantly more conservative, reducing the likelihood of drastic policy shifts that manifest as high KL divergence, which is often desirable during the fine-tuning phase. 

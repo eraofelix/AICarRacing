@@ -4,220 +4,300 @@ import numpy as np
 import os
 import time
 import argparse
-import matplotlib.pyplot as plt  # Import matplotlib
+import matplotlib.pyplot as plt
+import typing
 
 from src.env_wrappers import GrayScaleObservation, FrameStack, TimeLimit
 from src.ppo_agent import PPOAgent
 
 # --- Configuration --- #
+# Default configuration for evaluation script
 config = {
     # Environment settings
     "env_id": "CarRacing-v3",
     "frame_stack": 4,
     "seed": 42,
-    "max_episode_steps": 1000,
+    "max_episode_steps": 1000, # Max steps per evaluation episode
 
-    # Agent settings - use 256 features for ppo_simple model
-    "features_dim": 256,  # This matches the ppo_simple model architecture
+    # Agent settings (Required for PPOAgent initialization, even if not used for eval logic)
+    "features_dim": 256,          # Feature dimension (MUST match trained model)
+    "learning_rate": 1e-4,        # Placeholder LR
+    "gamma": 0.99,                # Placeholder gamma
+    "gae_lambda": 0.95,            # Placeholder lambda
+    "clip_epsilon": 0.1,          # Placeholder clip epsilon
+    "ppo_epochs": 5,              # Placeholder epochs
+    "batch_size": 64,             # Placeholder batch size
+    "vf_coef": 0.5,               # Placeholder vf coef
+    "ent_coef": 0.01,             # Placeholder ent coef
+    "max_grad_norm": 0.5,         # Placeholder grad norm
+    "target_kl": 0.02,            # Placeholder target kl
+    "initial_action_std": 1.0,    # Placeholder action std
+    "weight_decay": 1e-5,         # Placeholder weight decay
+    "fixed_std": False,           # Placeholder fixed std flag
+    "lr_warmup_steps": 0,         # Placeholder warmup steps
+    "min_learning_rate": 1e-7,    # Placeholder min LR
 
     # Evaluation settings
-    "n_eval_episodes": 100,
-    "render_mode": None,  # Set to "human" to watch, None to run faster
+    "n_eval_episodes": 10,        # Number of episodes to run for evaluation
+    "render_mode": None,       # Set to "human" to watch the agent play
 
     # Hardware
     "device": "cuda" if torch.cuda.is_available() else "cpu",
 }
 
-def set_seeds(seed):
+def set_seeds(seed: int):
+    """
+    Sets random seeds for NumPy and PyTorch for reproducible evaluation.
+
+    Args:
+        seed: The random seed value.
+    """
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
-def make_env(env_id, seed, frame_stack, render_mode=None, max_episode_steps=600):
-    """Create and wrap the environment for evaluation."""
+def make_env(env_id: str, seed: int, frame_stack: int, render_mode: typing.Union[str, None] = None, max_episode_steps: int = 1000):
+    """
+    Creates and wraps the evaluation environment.
+
+    Applies necessary wrappers (GrayScaleObservation, TimeLimit, FrameStack)
+    consistent with the training setup, but without reward shaping.
+
+    Args:
+        env_id: The ID of the Gymnasium environment.
+        seed: The random seed for environment initialization.
+        frame_stack: The number of frames to stack.
+        render_mode: The render mode ('human' or None).
+        max_episode_steps: Maximum steps per episode for the TimeLimit wrapper.
+
+    Returns:
+        The wrapped Gymnasium environment.
+    """
+    # Create the base environment
     env = gym.make(env_id, continuous=True, domain_randomize=False, render_mode=render_mode)
-    env.reset(seed=seed + 100)
+    # Seed the environment (use a different offset than training if desired)
+    env.reset(seed=seed + 100) # Use a different seed offset for evaluation
     env.action_space.seed(seed + 100)
 
+    # Apply standard wrappers (must match training configuration except for reward shaping)
     env = GrayScaleObservation(env)
     env = TimeLimit(env, max_episode_steps=max_episode_steps)
     env = FrameStack(env, frame_stack)
     return env
 
-# --- Main Evaluation Loop --- #
+# --- Main Evaluation Script --- #
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=str, default="./models/ppo_simple/Evaluated679.pth",
-                        help="Path to the trained PPO agent model (.pth file)")
+    # --- Hardcode Model Path Here --- #
+    # <<< REPLACE THIS WITH THE ACTUAL PATH TO YOUR .pth FILE >>>
+    HARDCODED_MODEL_PATH = "./models/ppo_carracing/prevbest630.pth"
+    # ---------------------------------- #
+
+    # --- Argument Parsing --- (Removed --model-path)
+    parser = argparse.ArgumentParser(description="Evaluate a trained PPO agent on CarRacing-v3")
+    # parser.add_argument("--model-path", type=str, required=True,
+    #                     help="Path to the trained PPO agent model checkpoint (.pth file).") # Removed
     parser.add_argument("--episodes", type=int, default=config["n_eval_episodes"],
-                        help="Number of episodes to run for evaluation (default: 100)")
+                        help=f"Number of episodes to run for evaluation (default: {config['n_eval_episodes']}).")
     parser.add_argument("--seed", type=int, default=config["seed"],
-                        help="Random seed for environment reset during evaluation")
-    parser.add_argument("--render", action='store_true', default=False,
-                        help="Enable rendering (default: False)")
+                        help=f"Base random seed for environment reset during evaluation (default: {config['seed']}).")
+    parser.add_argument("--render", action='store_true',
+                        help="Enable rendering to watch the agent play (default: disabled).")
     parser.add_argument("--features-dim", type=int, default=config["features_dim"],
-                        help="Feature dimension of the model (default: 256)")
-
+                        help=f"Feature dimension of the loaded model's CNN (default: {config['features_dim']}). MUST match the trained model.")
+    parser.add_argument("--max-steps", type=int, default=config["max_episode_steps"],
+                        help=f"Maximum steps per evaluation episode (default: {config['max_episode_steps']}).")
     args = parser.parse_args()
-    
-    # Update config based on args
+
+    # --- Configuration Update ---
+    # Override default config with command-line arguments
     config["features_dim"] = args.features_dim
+    config["n_eval_episodes"] = args.episodes
+    config["seed"] = args.seed
+    config["max_episode_steps"] = args.max_steps
     render_mode = "human" if args.render else None
-    eval_seed = args.seed
 
-    print(f"Using device: {config['device']}")
-    print(f"Evaluating model: {args.model_path}")
-    print(f"Running for {args.episodes} episodes with seed {eval_seed}")
-    print(f"Using features_dim: {config['features_dim']}")
+    print("--- Evaluation Configuration ---")
+    print(f"Device: {config['device']}")
+    print(f"Model Path: {HARDCODED_MODEL_PATH}") # Use hardcoded path
+    print(f"Evaluation Episodes: {config['n_eval_episodes']}")
+    print(f"Environment Seed: {config['seed']}")
+    print(f"Features Dimension: {config['features_dim']}")
+    print(f"Max Steps per Episode: {config['max_episode_steps']}")
     print(f"Rendering: {'Enabled' if render_mode else 'Disabled'}")
+    print("------------------------------")
 
-    set_seeds(eval_seed)
+    # Set random seeds for evaluation
+    set_seeds(config["seed"])
 
-    # Create environment
-    env = make_env(config["env_id"], eval_seed, config["frame_stack"], render_mode, config["max_episode_steps"])
+    # --- Environment and Agent Setup ---
+    # Create the evaluation environment
+    env = make_env(config["env_id"], config["seed"], config["frame_stack"], render_mode, config["max_episode_steps"])
 
-    # Create Agent with the correct features_dim
+    # Initialize the PPOAgent structure (weights will be loaded)
+    # Crucially, features_dim must match the loaded checkpoint
     agent = PPOAgent(env.observation_space,
                      env.action_space,
-                     features_dim=config["features_dim"],
+                     config=config, # Pass the config dictionary
                      device=config["device"])
 
-    # Load the trained model weights
-    if not os.path.exists(args.model_path):
-        print(f"Error: Model path not found: {args.model_path}")
-        exit()
+    # --- Load Model Weights ---
+    if not os.path.exists(HARDCODED_MODEL_PATH): # Use hardcoded path
+        print(f"Error: Model checkpoint not found at {HARDCODED_MODEL_PATH}")
+        exit(1)
 
-    checkpoint = torch.load(args.model_path, map_location=config["device"])
-    print("Loading model state dicts...")
+    print(f"Loading model weights from {HARDCODED_MODEL_PATH}...") # Use hardcoded path
     try:
+        # Load the checkpoint onto the specified device
+        checkpoint = torch.load(HARDCODED_MODEL_PATH, map_location=config["device"]) # Use hardcoded path
+
+        # Load state dictionaries for the networks
         agent.feature_extractor.load_state_dict(checkpoint['feature_extractor_state_dict'])
         agent.actor.load_state_dict(checkpoint['actor_state_dict'])
+        # Critic state dict might not always be saved or needed for evaluation, but load if present
         if 'critic_state_dict' in checkpoint:
              agent.critic.load_state_dict(checkpoint['critic_state_dict'])
-        print("Model weights loaded successfully.")
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        exit()
+             print("Loaded Feature Extractor, Actor, and Critic weights.")
+        else:
+             print("Loaded Feature Extractor and Actor weights (Critic weights not found in checkpoint).")
 
-    # Set agent to evaluation mode
+    except KeyError as e:
+        print(f"Error loading model: Missing key {e} in checkpoint. Ensure the checkpoint structure is correct and matches the agent definition (especially features_dim).")
+        exit(1)
+    except Exception as e:
+        print(f"Error loading model weights: {e}")
+        exit(1)
+
+    # Set agent networks to evaluation mode (disables dropout, etc.)
     agent.feature_extractor.eval()
     agent.actor.eval()
-    agent.critic.eval()
+    agent.critic.eval() # Set critic to eval mode as well
 
+    # --- Evaluation Loop ---
     episode_rewards = []
     episode_lengths = []
 
-    for episode in range(args.episodes):
-        observation, info = env.reset(seed=eval_seed + episode)
+    print(f"\nStarting evaluation for {config['n_eval_episodes']} episodes...")
+    for episode in range(config["n_eval_episodes"]):
+        # Reset environment with a unique seed for each episode for variability
+        observation, info = env.reset(seed=config["seed"] + episode)
         terminated = False
         truncated = False
         current_episode_reward = 0
         current_episode_length = 0
 
-        # Debug info for first episode
-        if episode == 0:
-            print(f"Observation shape: {observation.shape}")
-            with torch.no_grad():
-                try:
-                    obs_tensor = torch.as_tensor(observation, dtype=torch.float32, device=config["device"])
-                    print(f"Input tensor shape: {obs_tensor.shape}")
-                    features = agent.feature_extractor.cnn(obs_tensor / 255.0)
-                    print(f"CNN output shape: {features.shape}")
-                except Exception as e:
-                    print(f"Error during dummy forward pass: {e}")
-
+        # Run one episode
         while not (terminated or truncated):
             try:
-                # Ensure observation has correct shape with batch dimension
-                if len(observation.shape) == 3:  # (C, H, W)
-                    observation = np.expand_dims(observation, axis=0)  # Add batch dimension
-                
-                # Get action from agent
-                actions, values, log_probs = agent.act(observation)
-                
-                # Extract the first action from the batch
-                action = actions[0]
-                
-                # Debug first action in first episode
-                if episode == 0 and current_episode_length == 0:
-                    print(f"Action batch shape: {actions.shape}")
-                    print(f"Single action shape: {action.shape}")
-                    print(f"Action values: {action}")
-                
-                # Step environment
+                # Observation shape check (should be k, H, W)
+                if len(observation.shape) != 3:
+                    print(f"Warning: Unexpected observation shape {observation.shape} in episode {episode + 1}. Expected 3 dims.")
+                    # Attempt to reshape if it looks like a batch dim issue
+                    if len(observation.shape) == 4 and observation.shape[0] == 1:
+                        observation = observation.squeeze(0)
+                    else:
+                         raise ValueError("Cannot proceed with incompatible observation shape.")
+
+                # Add batch dimension for the agent's act method
+                # obs_batch = np.expand_dims(observation, axis=0)
+                # Convert to tensor on the correct device (agent.act now handles numpy input)
+                # obs_tensor = torch.as_tensor(obs_batch, dtype=torch.float32, device=config["device"])
+
+                # Get deterministic action from agent (or sample if needed)
+                # For evaluation, usually take the mean action (deterministic)
+                with torch.no_grad():
+                    # Pass observation directly to act (handles tensor conversion)
+                    actions, _, _ = agent.act(observation)
+                    # actions is shape (1, action_dim), take the first element
+                    action = actions[0]
+
+                # Step the environment
                 observation, reward, terminated, truncated, info = env.step(action)
-                
+
                 current_episode_reward += reward
                 current_episode_length += 1
-                
+
                 # Optional delay for smoother rendering
                 if render_mode == "human":
                     time.sleep(0.01)
-            except Exception as e:
-                print(f"Error during episode step: {e}")
-                print(f"Action shape: {actions.shape if 'actions' in locals() else 'unknown'}")
-                terminated = True
 
-        print(f"Episode {episode + 1}: Reward = {current_episode_reward:.2f}, Length = {current_episode_length}")
+            except Exception as e:
+                print(f"Error during episode {episode + 1} step {current_episode_length}: {e}")
+                # Log details for debugging
+                print(f"Observation shape: {observation.shape if 'observation' in locals() else 'unknown'}")
+                print(f"Action attempted: {action if 'action' in locals() else 'unknown'}")
+                import traceback
+                traceback.print_exc()
+                terminated = True # End the episode prematurely on error
+
+        # Log episode results
+        print(f"Episode {episode + 1}/{config['n_eval_episodes']}: Reward = {current_episode_reward:.2f}, Length = {current_episode_length}")
         episode_rewards.append(current_episode_reward)
         episode_lengths.append(current_episode_length)
 
+    # --- Cleanup and Results --- 
     env.close()
 
-    # Calculate and print summary statistics
+    # Calculate summary statistics
     mean_reward = np.mean(episode_rewards)
     std_reward = np.std(episode_rewards)
+    median_reward = np.median(episode_rewards)
+    min_reward = np.min(episode_rewards)
+    max_reward = np.max(episode_rewards)
     mean_length = np.mean(episode_lengths)
     std_length = np.std(episode_lengths)
 
-    # --- Calculate Floor and Ceiling ---
-    min_reward = np.min(episode_rewards)
-    max_reward = np.max(episode_rewards)
-
     print("\n--- Evaluation Summary ---")
-    print(f"Number of episodes: {args.episodes}")
+    print(f"Number of Episodes: {config['n_eval_episodes']}")
     print(f"Mean Reward: {mean_reward:.2f} +/- {std_reward:.2f}")
+    print(f"Median Reward: {median_reward:.2f}")
     print(f"Min Reward (Floor): {min_reward:.2f}")
     print(f"Max Reward (Ceiling): {max_reward:.2f}")
     print(f"Mean Episode Length: {mean_length:.1f} +/- {std_length:.1f}")
-    
-    # Categorical performance assessment
+
+    # --- Performance Assessment ---
+    # Provide a qualitative assessment based on typical CarRacing scores
     if mean_reward >= 900:
-        performance = "Exceptional"
+        performance = "Exceptional (>= 900)"
     elif mean_reward >= 800:
-        performance = "Excellent"
+        performance = "Excellent (800-899)"
     elif mean_reward >= 700:
-        performance = "Very Good"
+        performance = "Very Good (700-799)"
     elif mean_reward >= 500:
-        performance = "Good"
+        performance = "Good (500-699)"
     elif mean_reward >= 300:
-        performance = "Decent"
-    elif mean_reward >= 200:
-        performance = "Fair"
+        performance = "Fair (300-499)"
     else:
-        performance = "Needs Improvement"
-        
+        performance = "Needs Improvement (< 300)"
     print(f"Performance Rating: {performance}")
 
-    # --- Generate Plot ---
-    plt.figure(figsize=(10, 6))
-    plt.plot(episode_rewards, label='Episode Reward', marker='o', linestyle='-', markersize=4)
+    # --- Plotting Results ---
+    plt.figure(figsize=(12, 7))
+    # Plot individual episode rewards
+    plt.plot(episode_rewards, label='Episode Reward', marker='o', linestyle='-', markersize=4, alpha=0.7)
+    # Add lines for mean, min, max
     plt.axhline(mean_reward, color='r', linestyle='--', label=f'Mean Reward ({mean_reward:.2f})')
-    plt.axhline(min_reward, color='g', linestyle=':', label=f'Min Reward (Floor) ({min_reward:.2f})')
-    plt.axhline(max_reward, color='b', linestyle=':', label=f'Max Reward (Ceiling) ({max_reward:.2f})')
-    plt.title(f'Evaluation Results ({args.episodes} Episodes)')
-    plt.xlabel('Episode')
-    plt.ylabel('Total Reward')
+    plt.axhline(min_reward, color='g', linestyle=':', label=f'Min Reward ({min_reward:.2f})')
+    plt.axhline(max_reward, color='b', linestyle=':', label=f'Max Reward ({max_reward:.2f})')
+    plt.title(f'Agent Evaluation Results ({config["n_eval_episodes"]} Episodes)\nModel: {os.path.basename(HARDCODED_MODEL_PATH)}')
+    plt.xlabel('Episode Number')
+    plt.ylabel('Total Episodic Reward')
     plt.legend()
-    plt.grid(True)
+    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
     plt.tight_layout()
-    
-    # Save the plot
-    plot_filename = f"evaluation_rewards_{os.path.basename(args.model_path).replace('.pth', '')}_{args.episodes}ep.png"
-    plt.savefig(plot_filename)
-    print(f"Plot saved as {plot_filename}")
 
-    # Optionally display the plot
-    plt.show() # Uncomment this line if you want the plot to pop up automatically 
+    # --- Saving Plot ---
+    # Construct a meaningful filename
+    model_name = os.path.splitext(os.path.basename(HARDCODED_MODEL_PATH))[0] # Use hardcoded path
+    plot_filename = f"evaluation_{model_name}_{config['n_eval_episodes']}ep_seed{config['seed']}.png"
+    try:
+        plt.savefig(plot_filename)
+        print(f"\nEvaluation plot saved as: {plot_filename}")
+    except Exception as e:
+        print(f"\nError saving plot: {e}")
+
+    # --- Display Plot ---
+    # Optionally display the plot to the user
+    plt.show()
+    # print("Plot display complete.") 
