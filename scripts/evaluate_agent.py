@@ -9,6 +9,7 @@ import typing
 
 from src.env_wrappers import GrayScaleObservation, FrameStack, TimeLimit
 from src.ppo_agent import PPOAgent
+from src.random_agent import RandomAgent
 
 # --- Configuration --- #
 # Default configuration for evaluation script
@@ -108,6 +109,8 @@ if __name__ == "__main__":
                         help=f"Feature dimension of the loaded model's CNN (default: {config['features_dim']}). MUST match the trained model.")
     parser.add_argument("--max-steps", type=int, default=config["max_episode_steps"],
                         help=f"Maximum steps per evaluation episode (default: {config['max_episode_steps']}).")
+    parser.add_argument("--random", action='store_true',
+                        help="Use a random agent instead of loading a trained model (default: disabled).")
     args = parser.parse_args()
 
     # --- Configuration Update ---
@@ -120,7 +123,10 @@ if __name__ == "__main__":
 
     print("--- Evaluation Configuration ---")
     print(f"Device: {config['device']}")
-    print(f"Model Path: {HARDCODED_MODEL_PATH}") # Use hardcoded path
+    if not args.random:
+        print(f"Model Path: {HARDCODED_MODEL_PATH}") # Use hardcoded path
+    else:
+        print(f"Agent: Random (baseline comparison)")
     print(f"Evaluation Episodes: {config['n_eval_episodes']}")
     print(f"Environment Seed: {config['seed']}")
     print(f"Features Dimension: {config['features_dim']}")
@@ -135,44 +141,49 @@ if __name__ == "__main__":
     # Create the evaluation environment
     env = make_env(config["env_id"], config["seed"], config["frame_stack"], render_mode, config["max_episode_steps"])
 
-    # Initialize the PPOAgent structure (weights will be loaded)
-    # Crucially, features_dim must match the loaded checkpoint
-    agent = PPOAgent(env.observation_space,
-                     env.action_space,
-                     config=config, # Pass the config dictionary
-                     device=config["device"])
+    if args.random:
+        # Use RandomAgent for baseline comparison
+        agent = RandomAgent(env.observation_space, env.action_space, device=config["device"])
+        print("Using random agent as baseline")
+    else:
+        # Initialize the PPOAgent structure (weights will be loaded)
+        # Crucially, features_dim must match the loaded checkpoint
+        agent = PPOAgent(env.observation_space,
+                         env.action_space,
+                         config=config, # Pass the config dictionary
+                         device=config["device"])
 
-    # --- Load Model Weights ---
-    if not os.path.exists(HARDCODED_MODEL_PATH): # Use hardcoded path
-        print(f"Error: Model checkpoint not found at {HARDCODED_MODEL_PATH}")
-        exit(1)
+        # --- Load Model Weights ---
+        if not os.path.exists(HARDCODED_MODEL_PATH): # Use hardcoded path
+            print(f"Error: Model checkpoint not found at {HARDCODED_MODEL_PATH}")
+            exit(1)
 
-    print(f"Loading model weights from {HARDCODED_MODEL_PATH}...") # Use hardcoded path
-    try:
-        # Load the checkpoint onto the specified device
-        checkpoint = torch.load(HARDCODED_MODEL_PATH, map_location=config["device"]) # Use hardcoded path
+        print(f"Loading model weights from {HARDCODED_MODEL_PATH}...") # Use hardcoded path
+        try:
+            # Load the checkpoint onto the specified device
+            checkpoint = torch.load(HARDCODED_MODEL_PATH, map_location=config["device"]) # Use hardcoded path
 
-        # Load state dictionaries for the networks
-        agent.feature_extractor.load_state_dict(checkpoint['feature_extractor_state_dict'])
-        agent.actor.load_state_dict(checkpoint['actor_state_dict'])
-        # Critic state dict might not always be saved or needed for evaluation, but load if present
-        if 'critic_state_dict' in checkpoint:
-             agent.critic.load_state_dict(checkpoint['critic_state_dict'])
-             print("Loaded Feature Extractor, Actor, and Critic weights.")
-        else:
-             print("Loaded Feature Extractor and Actor weights (Critic weights not found in checkpoint).")
+            # Load state dictionaries for the networks
+            agent.feature_extractor.load_state_dict(checkpoint['feature_extractor_state_dict'])
+            agent.actor.load_state_dict(checkpoint['actor_state_dict'])
+            # Critic state dict might not always be saved or needed for evaluation, but load if present
+            if 'critic_state_dict' in checkpoint:
+                agent.critic.load_state_dict(checkpoint['critic_state_dict'])
+                print("Loaded Feature Extractor, Actor, and Critic weights.")
+            else:
+                print("Loaded Feature Extractor and Actor weights (Critic weights not found in checkpoint).")
 
-    except KeyError as e:
-        print(f"Error loading model: Missing key {e} in checkpoint. Ensure the checkpoint structure is correct and matches the agent definition (especially features_dim).")
-        exit(1)
-    except Exception as e:
-        print(f"Error loading model weights: {e}")
-        exit(1)
+        except KeyError as e:
+            print(f"Error loading model: Missing key {e} in checkpoint. Ensure the checkpoint structure is correct and matches the agent definition (especially features_dim).")
+            exit(1)
+        except Exception as e:
+            print(f"Error loading model weights: {e}")
+            exit(1)
 
-    # Set agent networks to evaluation mode (disables dropout, etc.)
-    agent.feature_extractor.eval()
-    agent.actor.eval()
-    agent.critic.eval() # Set critic to eval mode as well
+        # Set agent networks to evaluation mode (disables dropout, etc.)
+        agent.feature_extractor.eval()
+        agent.actor.eval()
+        agent.critic.eval() # Set critic to eval mode as well
 
     # --- Evaluation Loop ---
     episode_rewards = []
@@ -280,7 +291,10 @@ if __name__ == "__main__":
     plt.axhline(mean_reward, color='r', linestyle='--', label=f'Mean Reward ({mean_reward:.2f})')
     plt.axhline(min_reward, color='g', linestyle=':', label=f'Min Reward ({min_reward:.2f})')
     plt.axhline(max_reward, color='b', linestyle=':', label=f'Max Reward ({max_reward:.2f})')
-    plt.title(f'Agent Evaluation Results ({config["n_eval_episodes"]} Episodes)\nModel: {os.path.basename(HARDCODED_MODEL_PATH)}')
+    if args.random:
+        plt.title(f'Random Agent Evaluation Results ({config["n_eval_episodes"]} Episodes)')
+    else:
+        plt.title(f'Agent Evaluation Results ({config["n_eval_episodes"]} Episodes)\nModel: {os.path.basename(HARDCODED_MODEL_PATH)}')
     plt.xlabel('Episode Number')
     plt.ylabel('Total Episodic Reward')
     plt.legend()
@@ -289,7 +303,10 @@ if __name__ == "__main__":
 
     # --- Saving Plot ---
     # Construct a meaningful filename
-    model_name = os.path.splitext(os.path.basename(HARDCODED_MODEL_PATH))[0] # Use hardcoded path
+    if args.random:
+        model_name = "random_baseline"
+    else:
+        model_name = os.path.splitext(os.path.basename(HARDCODED_MODEL_PATH))[0] # Use hardcoded path
     plot_filename = f"evaluation_{model_name}_{config['n_eval_episodes']}ep_seed{config['seed']}.png"
     try:
         plt.savefig(plot_filename)
