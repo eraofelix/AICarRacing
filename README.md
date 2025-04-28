@@ -1,147 +1,111 @@
 # AI Car Racing
 
-A reinforcement learning project that trains agents to drive in Gymnasium's CarRacing-v3 environment using Proximal Policy Optimization (PPO).
+A reinforcement learning project that trains an agent to drive a car around a track using the Proximal Policy Optimization (PPO) algorithm.
 
-## Project Overview
+## What This Program Does
 
-This project implements:
-- A state-of-the-art PPO algorithm with curriculum learning
-- Configurable reward shaping and exploration strategies
-- Domain randomization for robust policy learning
-- Comprehensive evaluation tools
+This program uses reinforcement learning to teach a car to drive around a racing track in the CarRacing-v3 environment from Gymnasium (OpenAI Gym's successor). The program:
+
+1. **Trains a PPO agent** to control the car (steering, acceleration, braking)
+2. **Evaluates the trained agent's performance** on the racing track
+3. **Compares the PPO agent against a random baseline** to measure improvement
+
+The car receives an image of the track as input and must learn to stay on the track while driving as fast as possible.
 
 ## Installation
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/AICarRacing.git
-   cd AICarRacing
-   ```
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/AICarRacing.git
+cd AICarRacing
 
-2. Create and activate a virtual environment:
-   ```bash
-   # On Windows
-   python -m venv venv
-   .\venv\Scripts\activate
-   
-   # On macOS/Linux
-   python -m venv venv
-   source venv/bin/activate
-   ```
+# Create and activate a virtual environment
+python -m venv venv
+# On Windows
+.\venv\Scripts\activate
+# On macOS/Linux
+source venv/bin/activate
 
-3. Install dependencies:
-   ```bash
-   pip install torch gymnasium[box2d] numpy matplotlib tensorboard
-   ```
-
-## Project Structure
-
-```
-AICarRacing/
-├── src/                   # Core implementation
-│   ├── cnn_model.py       # CNN feature extractor architecture
-│   ├── ppo_agent.py       # PPO agent implementation
-│   ├── env_wrappers.py    # Environment wrappers for preprocessing
-│   └── rollout_buffer.py  # Experience storage and advantage computation
-├── scripts/               # Training and evaluation scripts
-│   ├── train_ppo.py       # Main training script
-│   ├── finetune_ppo.py    # Advanced training for domain randomization
-│   ├── evaluate_agent.py  # Agent evaluation script
-│   └── test_carracing.py  # Quick environment test
-├── models/                # Saved model checkpoints
-└── logs/                  # Training logs for TensorBoard
+# Install dependencies
+pip install torch gymnasium[box2d] numpy matplotlib tensorboard pandas
 ```
 
-## Training an Agent
+## How to Use
 
-### Basic Training
+### Training an Agent
 
-The main training script uses PPO with curriculum learning:
+Train an agent using PPO:
 
 ```bash
 python scripts/train_ppo.py
 ```
 
-Key features:
-- Progressive episode length increases based on performance
-- Automatic entropy coefficient adjustment for exploration
-- Domain randomization scheduled after basic driving skills are learned
-- Comprehensive TensorBoard logging
+This will:
+- Create an agent with a CNN that processes images from the car's perspective
+- Train the agent using PPO, optimizing for rewards from staying on track and driving fast
+- Save model checkpoints during training
+- Log training progress for visualization with TensorBoard
 
-### Monitoring Training
-
-Monitor training progress using TensorBoard:
+Monitor training progress:
 
 ```bash
 tensorboard --logdir=logs
 ```
 
-View metrics including:
-- Mean episode reward
-- Episode length
-- Policy loss and value loss
-- Exploration metrics (entropy, KL divergence)
+### Evaluating an Agent
 
-### Fine-tuning
-
-For advanced domain randomization training:
+Evaluate a trained agent:
 
 ```bash
-python scripts/finetune_ppo.py
+python scripts/evaluate_agent.py
 ```
 
-## Evaluating Agents
-
-To evaluate a trained model:
+To watch the agent drive:
 
 ```bash
-python scripts/evaluate_agent.py --model-path models/ppo_carracing/best_model.pth --episodes 10 --render
+python scripts/evaluate_agent.py --render
 ```
 
-Options:
-- `--model-path`: Path to the saved model checkpoint
-- `--episodes`: Number of evaluation episodes
-- `--seed`: Random seed for deterministic evaluation 
-- `--render`: Enable visual rendering (omit for faster evaluation)
+### Comparing with a Random Baseline
 
-## Configuration Options
+Compare your trained PPO agent against a random baseline:
 
-Key configuration parameters in `train_ppo.py`:
-
-```python
-config = {
-    # Environment settings
-    "max_episode_steps": 300,     # Initial episode length
-    "domain_randomize_intensity": 0.0,  # Randomization level
-    
-    # Training hyperparameters
-    "learning_rate": 2e-4,        # Learning rate
-    "buffer_size": 4096,          # Experience buffer size
-    "batch_size": 64,             # Batch size for updates
-    "ppo_epochs": 10,             # Update iterations per batch
-    "ent_coef": 0.08,             # Entropy coefficient
-    
-    # Reward shaping
-    "velocity_reward_weight": 0.07,  # Speed incentive
-    "progress_reward_weight": 0.03,  # Track progress incentive
-}
+```bash
+python scripts/compare_agents.py
 ```
+
+This will:
+- Run both your PPO agent and a random agent for several episodes
+- Calculate mean reward and episode length for each
+- Create bar charts comparing their performance
+- Save the comparison results as an image
+
+Additional options:
+
+```bash
+python scripts/compare_agents.py --episodes 20 --render
+```
+
+## Project Structure
+
+- `src/` - Core implementation files
+  - `ppo_agent.py` - The PPO reinforcement learning agent
+  - `random_agent.py` - A baseline agent that takes random actions
+  - `cnn_model.py` - CNN for processing visual input
+  - `env_wrappers.py` - Environment preprocessing (grayscale, frame stacking)
+  - `rollout_buffer.py` - Storage for training experiences
+
+- `scripts/` - Training and evaluation scripts
+  - `train_ppo.py` - Main training script
+  - `evaluate_agent.py` - Evaluates a trained model
+  - `compare_agents.py` - Compares PPO agent with random baseline
 
 ## Environment Details
 
-The Car Racing environment features:
-- **Action space**: Steering [-1,1], Gas [0,1], Brake [0,1]
-- **Observation**: RGB image (96x96x3), preprocessed to grayscale and stacked
-- **Reward**: -0.1 every frame + 1000/N for every track tile visited
-- **Episode termination**: All tiles visited or car goes off track
-
-## Training Strategy
-
-The training process follows three key phases:
-1. **Fundamentals Phase** (0-1M steps): Build solid driving skills without randomization
-2. **Randomization Transition** (1M-2M steps): Introduce and gradually increase domain randomization
-3. **Generalization Phase** (2M+ steps): Develop robust policies that work across varied conditions
-
-
+The CarRacing-v3 environment:
+- **Input**: RGB image (96x96 pixels) from the car's perspective
+- **Actions**: Steering (left/right), Gas (accelerate), Brake
+- **Reward**: Positive for staying on track, negative per timestep
+- **Goal**: Complete the track with maximum reward
 
 For more information, visit: [Gymnasium Car Racing](https://gymnasium.farama.org/environments/box2d/car_racing/)
