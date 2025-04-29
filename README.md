@@ -59,6 +59,8 @@ Use either as the path if you want to just test the evaluation and see the train
 Both should have a mean reward around 650-700 with the current evaluation settings. 
 Both took ~6 hours of training using the train_ppo.py script. Only minor reward shape differences between them. 
 
+[Agent Demos](https://youtube.com/playlist?list=PL896hAqTcFoWO0VgyxWrXyBtKzYf3yxkU&si=Y4v-Y_ToPX4FLTus)
+
 ### Evaluating an Agent
 
 Evaluate a trained agent:
