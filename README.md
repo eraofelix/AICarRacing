@@ -54,9 +54,9 @@ tensorboard --logdir=logs
 
 ### Saved Agents
 
-In BestSavedModels folder are the two best agents (Evaluated641.pth and Evaluated679.pth) that I was able to train with this script. Lots of room for improvement on both.
-Use either as the path if you want to just test the evaluation and see the models without having to build your own.
-Both should perform around 650-700 with the current evaluation settings. 
+In BestSavedAgents folder are the two best agents (Evaluated641.pth and Evaluated679.pth) that I was able to train with this script. Lots of room for improvement on both.
+Use either as the path if you want to just test the evaluation and see the trained agents without having to build your own.
+Both should have a mean reward around 650-700 with the current evaluation settings. 
 Both took ~6 hours of training using the train_ppo.py script. Only minor reward shape differences between them. 
 
 ### Evaluating an Agent

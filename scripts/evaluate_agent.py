@@ -92,7 +92,7 @@ def make_env(env_id: str, seed: int, frame_stack: int, render_mode: typing.Union
 if __name__ == "__main__":
     # --- Hardcode Model Path Here --- #
     # <<< REPLACE THIS WITH THE ACTUAL PATH TO YOUR .pth FILE >>>
-    HARDCODED_MODEL_PATH = "./BestSavedModels/Evaluated641.pth"
+    HARDCODED_MODEL_PATH = "./BestSavedAgents/Evaluated641.pth"
     # ---------------------------------- #
 
     # --- Argument Parsing --- 
