@@ -39,7 +39,7 @@ config = {
     "min_learning_rate": 1e-7,    # Placeholder min LR
 
     # Evaluation settings
-    "n_eval_episodes": 100,        # Number of episodes to run for evaluation (100 for all evaluation graphs)
+    "n_eval_episodes": 10,        # Number of episodes to run for evaluation (100 for all evaluation graphs)
     "render_mode": None,       # Set to "human" to watch the agent play
 
     # Hardware
@@ -92,7 +92,7 @@ def make_env(env_id: str, seed: int, frame_stack: int, render_mode: typing.Union
 if __name__ == "__main__":
     # --- Hardcode Model Path Here --- #
     # <<< REPLACE THIS WITH THE ACTUAL PATH TO YOUR .pth FILE >>>
-    HARDCODED_MODEL_PATH = "./BestSavedAgents/Evaluated641.pth"
+    HARDCODED_MODEL_PATH = "./BestSavedAgents/Evaluated679.pth"
     # ---------------------------------- #
 
     # --- Argument Parsing --- 
