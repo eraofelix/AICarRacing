@@ -20,253 +20,109 @@ from gymnasium.spaces import Box
 
 
 class GrayScaleObservation(gym.ObservationWrapper):
-    """
-    Converts RGB image observations to grayscale.
-
-    Assumes the input observation space is a 3D Box representing (H, W, 3) RGB images.
-    The output observation space is a 2D Box representing (H, W) grayscale images.
-    """
     def __init__(self, env):
-        """Initializes the grayscale wrapper."""
         super().__init__(env)
-        # Check if the input observation space is compatible (RGB image)
-        assert len(env.observation_space.shape) == 3 and env.observation_space.shape[2] == 3, \
-               f"GrayScaleObservation expects RGB image input (H, W, 3), got {env.observation_space.shape}"
-
-        # Define the new grayscale observation space
         obs_shape = self.observation_space.shape[:2] # Height, Width
         self.observation_space = Box(low=0, high=255, shape=obs_shape, dtype=np.uint8)
 
     def observation(self, obs: np.ndarray) -> np.ndarray:
-        """Converts a single RGB observation to grayscale using OpenCV."""
-        # Use OpenCV's conversion function
-        obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
-        return obs
+        return cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
 
 class TimeLimit(gym.Wrapper):
-    """
-    Applies a maximum step limit to an environment's episode.
-
-    This wrapper ensures that an episode terminates (by setting truncated=True)
-    if it exceeds a specified number of steps, regardless of the environment's
-    internal termination conditions.
-    """
     def __init__(self, env, max_episode_steps: int = 1000):
-        """
-        Initializes the time limit wrapper.
-
-        Args:
-            env: The Gymnasium environment to wrap.
-            max_episode_steps: The maximum number of steps allowed per episode.
-        """
         super().__init__(env)
         self._max_episode_steps = max_episode_steps
         self._elapsed_steps = 0
 
     def reset(self, **kwargs):
-        """Resets the environment and the step counter."""
         self._elapsed_steps = 0
         return self.env.reset(**kwargs)
 
     def step(self, action):
-        """Steps the environment and checks if the time limit has been reached."""
         observation, reward, terminated, truncated, info = self.env.step(action)
         self._elapsed_steps += 1
-
-        # Set truncated to True if the step limit is exceeded
         if self._elapsed_steps >= self._max_episode_steps:
             truncated = True
 
         return observation, reward, terminated, truncated, info
 
 class FrameStack(gym.ObservationWrapper):
-    """
-    Stacks the most recent k frames (observations) into a single observation.
-
-    This is commonly used in environments where temporal information is important,
-    like Atari games or CarRacing, to allow the agent to infer dynamics like velocity.
-
-    Assumes the input observation space is 2D (e.g., grayscale image HxW).
-    The output observation space has shape (k, H, W).
-    """
     def __init__(self, env, k: int):
-        """
-        Initializes the frame stacking wrapper.
-
-        Args:
-            env: The Gymnasium environment to wrap (must have 2D observation space).
-            k: The number of frames to stack.
-        """
         super().__init__(env)
         self.k = k
-        # Use a deque to efficiently store the last k frames
         self.frames = deque([], maxlen=k)
-
-        # Check input observation space shape (expects 2D, e.g., HxW after grayscale)
-        assert len(env.observation_space.shape) == 2, \
-               f"FrameStack expects 2D input shape (H, W), got {env.observation_space.shape}"
-
-        # Define the new stacked observation space shape
+        assert len(env.observation_space.shape) == 2, f"expects 2D input (H, W), got {env.observation_space.shape}"
         stacked_shape = (k,) + env.observation_space.shape # (k, H, W)
-        # Define the new observation space bounds and dtype
-        self.observation_space = Box(
-            low=0, high=255, shape=stacked_shape, dtype=env.observation_space.dtype
-        )
+        self.observation_space = Box(low=0, high=255, shape=stacked_shape, dtype=env.observation_space.dtype)
 
     def observation(self, observation: np.ndarray) -> np.ndarray:
-        """Adds the latest observation to the deque and returns the stacked frames."""
         self.frames.append(observation)
         return self._get_ob()
 
     def reset(self, **kwargs):
-        """
-        Resets the environment and the frame buffer.
-
-        Fills the frame buffer with the first observation repeated k times.
-        """
         obs, info = self.env.reset(**kwargs)
-        # Clear the deque and fill it with the initial observation
         for _ in range(self.k):
             self.frames.append(obs)
-        # Return the initial stacked observation and info dictionary
         return self._get_ob(), info
 
     def _get_ob(self) -> np.ndarray:
-        """Retrieves the stacked frames from the deque as a NumPy array."""
         assert len(self.frames) == self.k, f"Frame buffer size mismatch: expected {self.k}, got {len(self.frames)}"
-        # Stack the frames along the first axis (channel dimension)
         return np.stack(self.frames, axis=0)
 
 class CNNFeatureExtractor(nn.Module):
     """
-    Convolutional Neural Network (CNN) Feature Extractor.
-
-    Processes stacked input frames (e.g., k grayscale images) from the environment
-    observation space and outputs a flattened feature vector.
-    Designed for environments like CarRacing where visual input is primary.
-
     Architecture:
-        - Conv2D (16 filters, 8x8 kernel, stride 4)
-        - ReLU Activation
-        - Dropout (0.1)
-        - Conv2D (32 filters, 4x4 kernel, stride 2)
-        - ReLU Activation
-        - Dropout (0.1)
-        - Conv2D (64 filters, 3x3 kernel, stride 1)
-        - ReLU Activation
-        - Dropout (0.1)
-        - Flatten
-        - Linear (features_dim)
-        - Dropout (0.2)
-        - ReLU Activation
+        - Conv2D (16 filters, 8x8 kernel, stride 4)  -> ReLU Activation -> Dropout (0.1)
+        - Conv2D (32 filters, 4x4 kernel, stride 2)  -> ReLU Activation -> Dropout (0.1)
+        - Conv2D (64 filters, 3x3 kernel, stride 1)  -> ReLU Activation -> Dropout (0.1)
+        - Flatten -> Linear (features_dim) -> Dropout (0.2) -> ReLU Activation
 
     Includes internal normalization of input observations (division by 255.0).
     Uses Kaiming Normal initialization for convolutional and linear layers.
     """
     def __init__(self, observation_space: spaces.Box, features_dim: int = 256):
-        """
-        Initializes the CNN Feature Extractor.
-
-        Args:
-            observation_space: The environment observation space (Box). Expected shape (k, H, W).
-            features_dim: The desired dimensionality of the output feature vector.
-        """
         super().__init__()
-        # Validate observation space type and shape
-        assert isinstance(observation_space, spaces.Box), \
-            f"CNNFeatureExtractor expects a Box observation space, got {type(observation_space)}"
-        assert len(observation_space.shape) == 3, \
-            f"CNNFeatureExtractor expects observation shape (k, H, W), got {observation_space.shape}"
-
+        assert isinstance(observation_space, spaces.Box), f"expects a Box, got {type(observation_space)}"
+        assert len(observation_space.shape) == 3, f"CNNFeatureExtractor expects(k, H, W), got {observation_space.shape}"
         self.features_dim = features_dim
-        # Number of input channels (k from frame stacking)
         n_input_channels = observation_space.shape[0]
 
-        # Define the convolutional layers
         self.cnn = nn.Sequential(
-            nn.Conv2d(n_input_channels, 16, kernel_size=8, stride=4, padding=0),
-            nn.ReLU(),
-            nn.Dropout2d(0.1), # Dropout after activation
-
-            nn.Conv2d(16, 32, kernel_size=4, stride=2, padding=0),
-            nn.ReLU(),
-            nn.Dropout2d(0.1),
-
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=0),
-            nn.ReLU(),
-            nn.Dropout2d(0.1),
-
+            nn.Conv2d(n_input_channels, 16, kernel_size=8, stride=4, padding=0), nn.ReLU(), nn.Dropout2d(0.1), # Dropout after activation
+            nn.Conv2d(16, 32, kernel_size=4, stride=2, padding=0), nn.ReLU(), nn.Dropout2d(0.1),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=0), nn.ReLU(), nn.Dropout2d(0.1),
             nn.Flatten(), # Flatten the output for the linear layer
         )
 
         # Compute the flattened size automatically by doing a dummy forward pass
         with torch.no_grad():
-            # Create a dummy observation batch (add batch dimension)
             dummy_obs = torch.as_tensor(observation_space.sample()[None]).float()
-            # Pass through CNN (without normalization here, as it's just for shape)
             n_flatten = self.cnn(dummy_obs / 255.0).shape[1] # Get the flattened size
-
-        # Define the final linear layer(s)
-        self.linear = nn.Sequential(
-            nn.Linear(n_flatten, features_dim),
-            nn.Dropout(0.2), # Dropout before final activation
-            nn.ReLU()
-        )
-
-        # Initialize network weights
+        self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.Dropout(0.2), nn.ReLU())
         self._initialize_weights()
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
-        """
-        Performs the forward pass through the CNN and linear layers.
-
-        Args:
-            observations: Batch of observations (Batch, k, H, W). Assumed to be
-                          uint8 tensors or tensors needing normalization.
-
-        Returns:
-            Feature vector (Batch, features_dim).
-        """
-        # Normalize observations to [0, 1] range
-        # Assumes input is e.g., uint8 [0, 255] or float needing scaling
         normalized_obs = observations.float() / 255.0
-        # Pass through convolutional layers
         cnn_features = self.cnn(normalized_obs)
-        # Pass through linear layer(s)
         features = self.linear(cnn_features)
         return features
 
     def _initialize_weights(self):
-        """Initializes weights using Kaiming Normal for Conv/Linear layers."""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 # Kaiming Normal initialization for ReLU non-linearity
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
-                    # Initialize bias to zero
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 nn.init.constant_(m.bias, 0)
 
 class RolloutBuffer:
-    """
-    Stores trajectories collected by the PPO agent from parallel environments.
-
-    This buffer collects experiences (observations, actions, rewards, dones, values,
-    log probabilities) from multiple environments run in parallel.
-    It calculates advantages using Generalized Advantage Estimation (GAE)
-    and provides an iterator to yield shuffled minibatches for training.
-
-    Handles vectorized environments and ensures advantages are normalized globally
-    across all collected samples before batching.
-    """
     def __init__(self, buffer_size: int, observation_space: spaces.Box,
                  action_space: spaces.Box, num_envs: int, gamma: float = 0.99,
                  gae_lambda: float = 0.95, device: str = 'cpu'):
         """
-        Initializes the RolloutBuffer.
-
         Args:
             buffer_size: The number of steps to collect *per environment* before calculating advantages.
             observation_space: The observation space of a single environment.
@@ -318,36 +174,18 @@ class RolloutBuffer:
             truncated: np.ndarray,
             value: np.ndarray,
             log_prob: np.ndarray):
-        """
-        Adds a transition (from all parallel environments) to the buffer.
-
-        Args:
-            obs: Observations from all environments. Shape (num_envs, *obs_shape).
-            action: Actions taken in all environments. Shape (num_envs, action_dim).
-            reward: Rewards received in all environments. Shape (num_envs,).
-            terminated: Termination flags from all environments. Shape (num_envs,).
-            truncated: Truncation flags from all environments. Shape (num_envs,).
-            value: Value estimates from the critic for the current obs. Shape (num_envs,).
-            log_prob: Log probabilities of the taken actions. Shape (num_envs,).
-        """
-        # Store data at the current position
         self.observations[self.pos] = obs
         self.actions[self.pos] = action
-        # Clip rewards for stability
         self.rewards[self.pos] = np.clip(reward, -10.0, 10.0)
         self.dones[self.pos] = (terminated | truncated).astype(np.float32) # Store combined done signal
         self.values[self.pos] = value
         self.log_probs[self.pos] = log_prob
 
-        # Determine if this step is the start of a new episode for each env
-        # An episode starts at the beginning (pos=0) or if the previous step was a 'done' step
         if self.pos > 0:
             self.episode_starts[self.pos] = self.dones[self.pos - 1]
         else:
-            # The very first step in the buffer is always considered an episode start
             self.episode_starts[self.pos] = 1.0 # Should be np.ones(self.num_envs) ideally, but broadcast works
 
-        # Increment buffer position and handle wrap-around
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
@@ -469,22 +307,7 @@ LOG_STD_MAX = 2
 LOG_STD_MIN = -20
 
 class Actor(nn.Module):
-    """
-    Actor Network (Policy) for PPO with continuous actions.
-
-    Takes features extracted by a CNN and outputs the mean and log standard
-    deviation of a Gaussian distribution representing the policy.
-    """
     def __init__(self, features_dim: int, action_dim: int, initial_action_std: float = 1.0, fixed_std: bool = False):
-        """
-        Initializes the Actor network.
-
-        Args:
-            features_dim: Dimensionality of the input feature vector from the CNN.
-            action_dim: Dimensionality of the continuous action space.
-            initial_action_std: Initial value for the standard deviation of the action distribution.
-            fixed_std: If True, use a fixed standard deviation; otherwise, learn it.
-        """
         super().__init__()
         self.action_dim = action_dim
         self.initial_action_std = initial_action_std
@@ -511,17 +334,6 @@ class Actor(nn.Module):
         nn.init.constant_(self.fc_mean.bias, 0.0)
 
     def forward(self, features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Performs the forward pass through the Actor network.
-
-        Args:
-            features: Feature tensor from the CNN (Batch, features_dim).
-
-        Returns:
-            A tuple containing:
-                - mean: The mean of the action distribution (Batch, action_dim).
-                - log_std: The log standard deviation of the action distribution (Batch, action_dim).
-        """
         x = torch.relu(self.fc1(features))
         x = torch.relu(self.fc2(x))
 
@@ -578,8 +390,7 @@ class Critic(nn.Module):
     """
     Critic Network (Value Function) for PPO.
 
-    Takes features extracted by a CNN and outputs a scalar value representing
-    the estimated value of the state.
+    Takes features extracted by a CNN and outputs a scalar value representing the estimated value of the state.
     """
     def __init__(self, features_dim: int):
         """
@@ -616,30 +427,8 @@ class Critic(nn.Module):
 
 
 class PPOAgent:
-    """
-    Proximal Policy Optimization (PPO) Agent.
-
-    Combines a CNN feature extractor, an Actor network (policy), and a Critic
-    network (value function) to learn a policy for continuous control tasks.
-    Implements features like GAE, PPO clipping, entropy bonus, gradient clipping,
-    learning rate scheduling (warmup and cosine decay), and optional mixed precision.
-    """
     def __init__(self, observation_space: spaces.Box, action_space: spaces.Box,
                  config: dict, device: str = 'cpu'):
-        """
-        Initializes the PPO Agent using a configuration dictionary.
-
-        Args:
-            observation_space: The environment's observation space.
-            action_space: The environment's action space.
-            config: A dictionary containing agent hyperparameters.
-                    Expected keys: learning_rate, gamma, gae_lambda, clip_epsilon,
-                                   ppo_epochs, batch_size, vf_coef, ent_coef,
-                                   max_grad_norm, features_dim, target_kl,
-                                   initial_action_std, weight_decay, fixed_std,
-                                   lr_warmup_steps, min_learning_rate.
-            device: The computation device ('cpu' or 'cuda').
-        """
         self.observation_space = observation_space
         self.action_space = action_space
         self.action_dim = action_space.shape[0]
@@ -683,14 +472,7 @@ class PPOAgent:
             lr=self.initial_lr, eps=1e-4, weight_decay=self.weight_decay # Use initial_lr here, Increased eps
         )
 
-        print(f"--- PPO Agent Initialized ---")
-        print(f"Device: {self.device}")
-        print(f"Feature Extractor Params: {sum(p.numel() for p in self.feature_extractor.parameters()):,}")
-        print(f"Actor Params: {sum(p.numel() for p in self.actor.parameters()):,}")
-        print(f"Critic Params: {sum(p.numel() for p in self.critic.parameters()):,}")
-        print(f"Action Standard Deviation: {'Fixed' if self.fixed_std else 'Learned'} (Initial: {self.initial_action_std})")
-        print(f"Learning Rate: Initial={self.initial_lr:.2e}, Warmup Steps={self.lr_warmup_steps:,}")
-        print(f"---------------------------")
+        print(f"Device: {self.device} | FeatExt: {sum(p.numel() for p in self.feature_extractor.parameters()):,} | Actor: {sum(p.numel() for p in self.actor.parameters()):,} | Critic: {sum(p.numel() for p in self.critic.parameters()):,} | Std: {'Fixed' if self.fixed_std else 'Learned'}({self.initial_action_std}) | LR: {self.initial_lr:.2e}(warmup:{self.lr_warmup_steps:,})")
 
     def act(self, observation: torch.Tensor) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -745,15 +527,7 @@ class PPOAgent:
 
     def update_learning_rate(self, total_timesteps: int) -> float:
         """
-        Updates the learning rate for both optimizers based on a schedule.
-
         Implements linear warmup followed by cosine decay.
-
-        Args:
-            total_timesteps: The total number of training steps planned.
-
-        Returns:
-            The newly calculated learning rate.
         """
         self.steps_done += 1 # Increment internal step counter
 
@@ -761,16 +535,11 @@ class PPOAgent:
         if self.steps_done < self.lr_warmup_steps:
             alpha = self.steps_done / self.lr_warmup_steps
             current_lr = self.initial_lr * (0.3 + 0.7 * alpha)
-        # Decay Phase: Cosine annealing from initial_lr to near zero
         else:
-            progress = min((self.steps_done - self.lr_warmup_steps) /
-                           (total_timesteps - self.lr_warmup_steps), 1.0)
+            progress = min((self.steps_done - self.lr_warmup_steps) / (total_timesteps - self.lr_warmup_steps), 1.0)
             current_lr = self.initial_lr * 0.5 * (1.0 + np.cos(np.pi * progress))
 
-        # Ensure LR doesn't drop below the configured minimum threshold
         current_lr = max(current_lr, self.min_lr) # Use self.min_lr
-
-        # Apply the updated learning rate to both optimizers
         for param_group in self.actor_optimizer.param_groups:
             param_group['lr'] = current_lr
         for param_group in self.critic_optimizer.param_groups:
@@ -1080,7 +849,7 @@ config = {
 
     # Logging and saving
     "log_interval": 1,                  # Number of rollouts between logging summary statistics
-    "save_interval": 10,                # Number of rollouts between saving model checkpoints
+    "save_interval": 100,                # Number of rollouts between saving model checkpoints
     "save_dir": "./models/ppo_carracing",  # Directory to save model checkpoints
     "log_dir": "./logs/ppo_carracing",     # Directory to save TensorBoard logs
 
@@ -1594,7 +1363,7 @@ if __name__ == "__main__":
                             episode_rewards.append(ep_reward)
                             episode_lengths.append(ep_length)
                             rollout_episode_rewards.append(ep_reward) # Append reward HERE too
-                            print(f"Env {i} finished (manual): Reward={ep_reward:.2f}, Length={ep_length}, Total Steps={global_step+step*config['num_envs']}")
+                            # print(f"Env {i} finished (manual): Reward={ep_reward:.2f}, Length={ep_length}, Total Steps={global_step+step*config['num_envs']}")
 
                             # --- BEGIN MOVED LOGGING LOGIC ---
                             # Attempt to get detailed info from the info dict of the finished env
@@ -1677,18 +1446,13 @@ if __name__ == "__main__":
                 mean_rollout_reward = np.mean(rollout_episode_rewards) if rollout_episode_rewards else -1 # Use -1 if no episodes finished in interval
 
                 # --- Print summary to console ---
-                print(f"====== Rollout {num_rollouts} | Step {global_step}/{config['total_timesteps']} ======")
-                print(f"Mean Reward (Last 100): {mean_reward_100:.2f}")
-                if mean_rollout_reward != -1:
-                    print(f"Mean Reward (This Rollout): {mean_rollout_reward:.2f} ({len(rollout_episode_rewards)} episodes)")
-                print(f"Mean Episode Length: {mean_length_100:.1f}")
-                print(f"FPS: {fps}")
-                print(f"Learning Rate: {current_lr:.2e}")
-                print(f"Policy Loss: {metrics['policy_loss']:.4f}")
-                print(f"Value Loss: {metrics['value_loss']:.4f}")
-                print(f"Entropy: {metrics['entropy_loss']:.4f}")
-                print(f"Approx KL: {metrics['approx_kl']:.4f}")
-                print(f"Clip Fraction: {metrics['clip_fraction']:.4f}")
+                rollout_reward_str = f"{mean_rollout_reward:.2f}({len(rollout_episode_rewards)})" if mean_rollout_reward != -1 else "N/A"
+                print(f"Rollout {num_rollouts:3d} | Step {global_step:7d}/{config['total_timesteps']:7d} | "
+                      f"Reward100: {mean_reward_100:6.2f} | RewardRoll: {rollout_reward_str:>10s} | "
+                      f"Length: {mean_length_100:5.1f} | FPS: {fps:4d} | "
+                      f"LR: {current_lr:.2e} | PiLoss: {metrics['policy_loss']:6.4f} | "
+                      f"VLoss: {metrics['value_loss']:6.4f} | Ent: {metrics['entropy_loss']:6.4f} | "
+                      f"KL: {metrics['approx_kl']:6.4f} | Clip: {metrics['clip_fraction']:6.4f}")
 
                 # --- Log metrics to TensorBoard ---
                 writer.add_scalar("charts/mean_reward_100", mean_reward_100, global_step)
@@ -1704,7 +1468,7 @@ if __name__ == "__main__":
                 writer.add_scalar("losses/clip_fraction", metrics["clip_fraction"], global_step)
 
                 # --- Save Best Model ---
-                if mean_reward_100 > best_mean_reward:
+                if mean_reward_100 > best_mean_reward and num_rollouts > 100:
                     best_mean_reward = mean_reward_100
                     best_model_path = os.path.join(config["save_dir"], "best_model.pth")
                     print(f"New best mean reward: {best_mean_reward:.2f}. Saving model to {best_model_path}")
