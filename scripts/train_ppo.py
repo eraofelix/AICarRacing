@@ -17,6 +17,7 @@ from typing import Generator, Tuple, Optional
 import cv2
 from gymnasium import spaces
 from gymnasium.spaces import Box
+from datetime import datetime
 
 # Constants for clamping the log standard deviation
 LOG_STD_MAX = 2
@@ -82,14 +83,206 @@ config = {
 os.environ['OMP_NUM_THREADS'] = str(config["torch_num_threads"])
 os.environ['MKL_NUM_THREADS'] = str(config["torch_num_threads"])
 torch.set_num_threads(config["torch_num_threads"])
-
-# Configure GPU settings if using CUDA
 if config["device"] == "cuda":
     torch.backends.cudnn.benchmark = True # Enable cuDNN auto-tuner for best performance
     if config["mixed_precision"]:
         # Enable TensorFloat-32 for faster matrix multiplications on compatible hardware
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+
+class RewardShapingWrapper(gym.Wrapper):
+    """
+    Applies custom reward shaping to the CarRacing environment.
+
+    Adds rewards for velocity, survival, staying on track, and smooth driving.
+    Adds penalties for going off-track, jerky steering, and accelerating while turning sharply.
+    """
+    def __init__(self, env, velocity_weight: float = 0.005, survival_reward: float = 0.05,
+                 track_penalty: float = 2.0, steering_smooth_weight: float = 0.1,
+                 acceleration_while_turning_penalty_weight: float = 0.5):
+        """
+        Initializes the RewardShapingWrapper.
+
+        Args:
+            env: The Gymnasium environment to wrap.
+            velocity_weight: Weight for the speed-based reward component.
+            survival_reward: Constant reward added at each step.
+            track_penalty: Penalty applied for each step off-track.
+            steering_smooth_weight: Weight for the steering change penalty.
+            acceleration_while_turning_penalty_weight: Weight for the penalty for accelerating during sharp turns.
+        """
+        super().__init__(env)
+        self.velocity_weight = velocity_weight
+        self.survival_reward = survival_reward
+        self.track_penalty = track_penalty
+        self.steering_smooth_weight = steering_smooth_weight
+        self.acceleration_while_turning_penalty_weight = acceleration_while_turning_penalty_weight
+
+        # Track previous action for smoothness calculations
+        self.last_steering = 0.0
+        self.last_speed = 0.0
+
+        # Track cumulative reward components per episode
+        self.episode_velocity_rewards = 0.0
+        self.episode_survival_rewards = 0.0
+        self.episode_track_penalties = 0.0
+        self.episode_steering_penalties = 0.0
+        self.episode_acceleration_while_turning_penalties = 0.0
+        self.steps_off_track = 0
+
+        # Additional reward components
+        self.centerline_reward_weight = 0.5 # Reward for staying near the track center
+        self.track_return_weight = 0.3    # Reward for steering back towards the track when off-track
+        self.speed_consistency_weight = 0.05 # Penalty for large speed changes
+
+    def reset(self, **kwargs):
+        """Resets the environment and internal state trackers."""
+        self.last_steering = 0.0
+        self.last_speed = 0.0
+
+        # Reset episode trackers
+        self.episode_velocity_rewards = 0.0
+        self.episode_survival_rewards = 0.0
+        self.episode_track_penalties = 0.0
+        self.episode_steering_penalties = 0.0
+        self.episode_acceleration_while_turning_penalties = 0.0
+        self.steps_off_track = 0
+
+        obs, info = self.env.reset(**kwargs)
+
+        # Initialize reward components in the info dictionary
+        info['velocity_rewards'] = 0.0
+        info['survival_rewards'] = 0.0
+        info['track_penalties'] = 0.0
+        info['steering_penalties'] = 0.0
+        info['acceleration_while_turning_penalties'] = 0.0
+        info['steps_off_track'] = 0
+
+        return obs, info
+
+    def step(self, action):
+        """
+        Steps the environment and applies reward shaping.
+
+        Args:
+            action: The action taken by the agent.
+
+        Returns:
+            A tuple containing (observation, shaped_reward, terminated, truncated, info).
+            The info dictionary includes detailed reward components.
+        """
+        obs, reward, terminated, truncated, info = self.env.step(action)
+
+        # Ensure info is a dictionary
+        if info is None:
+             info = {}
+
+        # Extract action components
+        steering = action[0]
+        gas = action[1]
+        # brake = action[2] # Brake is not used in current reward shaping
+
+        # Initialize reward components for this step
+        step_velocity_reward = 0.0
+        step_survival_reward = 0.0
+        step_track_penalty = 0.0
+        step_steering_penalty = 0.0
+        step_acceleration_while_turning_penalty = 0.0
+        step_centerline_reward = 0.0
+        step_speed_consistency_reward = 0.0
+        step_track_return_reward = 0.0
+        off_track = False
+
+        # 1. Velocity rewards: Encourage higher speeds
+        speed = info.get('speed', 0.0) # Get speed from info if available
+        if speed > 0:
+            step_velocity_reward = speed * self.velocity_weight
+            reward += step_velocity_reward
+            self.episode_velocity_rewards += step_velocity_reward
+
+        # 2. Survival rewards: Encourage longer episodes
+        step_survival_reward = self.survival_reward
+        reward += step_survival_reward
+        self.episode_survival_rewards += step_survival_reward
+
+        # 3. Track adherence penalty: Penalize going off-track (onto grass)
+        #    Requires RGB observation input to this wrapper.
+        if len(obs.shape) == 3 and obs.shape[2] == 3: # Check if observation is RGB
+            # Check bottom center pixels for green color (indicative of grass)
+            car_area = obs[84:94, 42:54, :]
+            green_channel = car_area[:, :, 1]
+            red_channel = car_area[:, :, 0]
+
+            # Heuristic: High green and low red likely means off-track
+            off_track = np.mean(green_channel) > 150 and np.mean(red_channel) < 100
+
+            if off_track:
+                step_track_penalty = self.track_penalty
+                reward -= step_track_penalty
+                self.episode_track_penalties += step_track_penalty
+                self.steps_off_track += 1
+
+                # Add guidance reward to steer back towards the track center
+                # Simplified: assumes track is generally ahead
+                track_direction = np.array([1.0, 0.0])
+                # Approximate car direction based on steering angle
+                car_direction = np.array([np.cos(steering * np.pi / 2), np.sin(steering * np.pi / 2)])
+                # Reward alignment with track direction
+                step_track_return_reward = np.dot(track_direction, car_direction) * self.track_return_weight
+                reward += step_track_return_reward
+            else:
+                # 5. Centerline reward: Reward staying near the center (higher red channel value)
+                road_redness = np.mean(red_channel)
+                step_centerline_reward = min(road_redness / 200, 1.0) * self.centerline_reward_weight
+                reward += step_centerline_reward
+
+        # 4. Steering smoothness penalty: Penalize large changes in steering, especially at high speed
+        steering_change = abs(steering - self.last_steering)
+        step_steering_penalty = steering_change * self.steering_smooth_weight * (1.0 + speed * 0.1)
+        reward -= step_steering_penalty
+        self.episode_steering_penalties += step_steering_penalty
+
+        # 6. Speed consistency reward: Penalize large changes in speed
+        speed_change = abs(speed - self.last_speed)
+        step_speed_consistency_reward = -speed_change * self.speed_consistency_weight
+        reward += step_speed_consistency_reward
+
+        # 7. Acceleration while turning penalty: Penalize applying gas during sharp turns
+        steering_threshold = 0.4 # Angle threshold for penalty
+        gas_threshold = 0.1      # Gas threshold for penalty
+        if abs(steering) > steering_threshold and gas > gas_threshold:
+            step_acceleration_while_turning_penalty = (
+                self.acceleration_while_turning_penalty_weight *
+                (gas - gas_threshold) *
+                (abs(steering) - steering_threshold)
+            )
+            reward -= step_acceleration_while_turning_penalty
+            self.episode_acceleration_while_turning_penalties += step_acceleration_while_turning_penalty
+
+        # Update state for next step
+        self.last_steering = steering
+        self.last_speed = speed
+
+        # Add step-wise reward components to info
+        info['velocity_rewards'] = step_velocity_reward
+        info['survival_rewards'] = step_survival_reward
+        info['track_penalties'] = step_track_penalty
+        info['steering_penalties'] = step_steering_penalty
+        info['acceleration_while_turning_penalties'] = step_acceleration_while_turning_penalty
+        info['centerline_rewards'] = step_centerline_reward
+        info['speed_consistency_rewards'] = step_speed_consistency_reward
+        info['track_return_rewards'] = step_track_return_reward
+        info['off_track'] = off_track
+
+        # Add cumulative episode totals to info (useful for final info dict)
+        info['episode_velocity_rewards'] = self.episode_velocity_rewards
+        info['episode_survival_rewards'] = self.episode_survival_rewards
+        info['episode_track_penalties'] = self.episode_track_penalties
+        info['episode_steering_penalties'] = self.episode_steering_penalties
+        info['episode_acceleration_while_turning_penalties'] = self.episode_acceleration_while_turning_penalties
+        info['steps_off_track'] = self.steps_off_track
+
+        return obs, reward, terminated, truncated, info
 
 class GrayScaleObservation(gym.ObservationWrapper):
     def __init__(self, env):
@@ -189,6 +382,124 @@ class CNNFeatureExtractor(nn.Module):
             elif isinstance(m, nn.Linear):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 nn.init.constant_(m.bias, 0)
+
+class Actor(nn.Module):
+    def __init__(self, features_dim: int, action_dim: int, initial_action_std: float = 1.0, fixed_std: bool = False):
+        super().__init__()
+        self.action_dim = action_dim
+        self.initial_action_std = initial_action_std
+        self.fixed_std = fixed_std
+
+        hidden_dim = 256 # Dimension of hidden layers
+        self.fc1 = nn.Linear(features_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        # Output layer for the mean of the action distribution
+        self.fc_mean = nn.Linear(hidden_dim, action_dim)
+
+        # Output layer for the log standard deviation (learned or fixed)
+        if not fixed_std:
+            self.fc_logstd = nn.Linear(hidden_dim, action_dim)
+            # Initialize log_std weights near zero and bias to initial_action_std
+            self.fc_logstd.weight.data.fill_(0.0)
+            self.fc_logstd.bias.data.fill_(np.log(self.initial_action_std))
+        else:
+            # Use a non-trainable parameter for fixed standard deviation
+            self.log_std = nn.Parameter(torch.ones(action_dim) * np.log(self.initial_action_std), requires_grad=False)
+
+        # Initialize the mean layer weights orthogonally with small gain for stability
+        nn.init.orthogonal_(self.fc_mean.weight, gain=0.01)
+        nn.init.constant_(self.fc_mean.bias, 0.0)
+
+    def forward(self, features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        x = torch.relu(self.fc1(features))
+        x = torch.relu(self.fc2(x))
+
+        # Apply tanh activation to constrain the mean to [-1, 1]
+        mean = torch.tanh(self.fc_mean(x))
+
+        if not self.fixed_std:
+            log_std = self.fc_logstd(x)
+            # Clamp log_std to prevent numerical instability
+            log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
+        else:
+            # Expand the fixed log_std to match the batch size
+            batch_size = mean.size(0)
+            log_std = self.log_std.expand(batch_size, -1)
+
+        return mean, log_std
+
+    def get_action_dist(self, features: torch.Tensor) -> Normal:
+        """
+        Creates the action distribution for the given features.
+
+        Args:
+            features: Feature tensor from the CNN (Batch, features_dim).
+
+        Returns:
+            A PyTorch Normal distribution object representing the policy.
+        """
+        mean, log_std = self.forward(features)
+        std = log_std.exp() # Convert log_std to std
+        return Normal(mean, std)
+
+    def evaluate_actions(self, features: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Computes the log probability and entropy of given actions under the current policy.
+
+        Used during the PPO update step.
+
+        Args:
+            features: Features tensor (Batch, features_dim).
+            actions: Actions tensor (Batch, action_dim).
+
+        Returns:
+            A tuple containing:
+                - log_prob: Log probability of the actions (Batch,).
+                - entropy: Entropy of the action distribution (Batch,).
+        """
+        action_dist = self.get_action_dist(features)
+        log_prob = action_dist.log_prob(actions).sum(axis=-1) # Sum log probs across action dimensions
+        entropy = action_dist.entropy().sum(axis=-1) # Sum entropy across action dimensions
+        return log_prob, entropy
+
+class Critic(nn.Module):
+    """
+    Critic Network (Value Function) for PPO.
+
+    Takes features extracted by a CNN and outputs a scalar value representing the estimated value of the state.
+    """
+    def __init__(self, features_dim: int):
+        """
+        Initializes the Critic network.
+
+        Args:
+            features_dim: Dimensionality of the input feature vector from the CNN.
+        """
+        super().__init__()
+        hidden_dim = 256 # Dimension of hidden layers
+        self.fc1 = nn.Linear(features_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        # Output layer for the state value (a single scalar)
+        self.fc_value = nn.Linear(hidden_dim, 1)
+
+        # Initialize the value layer weights/biases with small values
+        nn.init.uniform_(self.fc_value.weight, -3e-3, 3e-3)
+        nn.init.uniform_(self.fc_value.bias, -3e-3, 3e-3)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """
+        Performs the forward pass through the Critic network.
+
+        Args:
+            features: Feature tensor from the CNN (Batch, features_dim).
+
+        Returns:
+            The estimated state value (Batch,).
+        """
+        x = torch.relu(self.fc1(features))
+        x = torch.relu(self.fc2(x))
+        value = self.fc_value(x)
+        return value.squeeze(-1) # Remove the last dimension (size 1)
 
 class RolloutBuffer:
     def __init__(self, buffer_size: int, observation_space: spaces.Box,
@@ -373,124 +684,6 @@ class RolloutBuffer:
     def size(self) -> int:
         """Returns the total number of transitions currently stored across all environments."""
         return self.total_buffer_size if self.full else self.pos * self.num_envs
-
-class Actor(nn.Module):
-    def __init__(self, features_dim: int, action_dim: int, initial_action_std: float = 1.0, fixed_std: bool = False):
-        super().__init__()
-        self.action_dim = action_dim
-        self.initial_action_std = initial_action_std
-        self.fixed_std = fixed_std
-
-        hidden_dim = 256 # Dimension of hidden layers
-        self.fc1 = nn.Linear(features_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        # Output layer for the mean of the action distribution
-        self.fc_mean = nn.Linear(hidden_dim, action_dim)
-
-        # Output layer for the log standard deviation (learned or fixed)
-        if not fixed_std:
-            self.fc_logstd = nn.Linear(hidden_dim, action_dim)
-            # Initialize log_std weights near zero and bias to initial_action_std
-            self.fc_logstd.weight.data.fill_(0.0)
-            self.fc_logstd.bias.data.fill_(np.log(self.initial_action_std))
-        else:
-            # Use a non-trainable parameter for fixed standard deviation
-            self.log_std = nn.Parameter(torch.ones(action_dim) * np.log(self.initial_action_std), requires_grad=False)
-
-        # Initialize the mean layer weights orthogonally with small gain for stability
-        nn.init.orthogonal_(self.fc_mean.weight, gain=0.01)
-        nn.init.constant_(self.fc_mean.bias, 0.0)
-
-    def forward(self, features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        x = torch.relu(self.fc1(features))
-        x = torch.relu(self.fc2(x))
-
-        # Apply tanh activation to constrain the mean to [-1, 1]
-        mean = torch.tanh(self.fc_mean(x))
-
-        if not self.fixed_std:
-            log_std = self.fc_logstd(x)
-            # Clamp log_std to prevent numerical instability
-            log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
-        else:
-            # Expand the fixed log_std to match the batch size
-            batch_size = mean.size(0)
-            log_std = self.log_std.expand(batch_size, -1)
-
-        return mean, log_std
-
-    def get_action_dist(self, features: torch.Tensor) -> Normal:
-        """
-        Creates the action distribution for the given features.
-
-        Args:
-            features: Feature tensor from the CNN (Batch, features_dim).
-
-        Returns:
-            A PyTorch Normal distribution object representing the policy.
-        """
-        mean, log_std = self.forward(features)
-        std = log_std.exp() # Convert log_std to std
-        return Normal(mean, std)
-
-    def evaluate_actions(self, features: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Computes the log probability and entropy of given actions under the current policy.
-
-        Used during the PPO update step.
-
-        Args:
-            features: Features tensor (Batch, features_dim).
-            actions: Actions tensor (Batch, action_dim).
-
-        Returns:
-            A tuple containing:
-                - log_prob: Log probability of the actions (Batch,).
-                - entropy: Entropy of the action distribution (Batch,).
-        """
-        action_dist = self.get_action_dist(features)
-        log_prob = action_dist.log_prob(actions).sum(axis=-1) # Sum log probs across action dimensions
-        entropy = action_dist.entropy().sum(axis=-1) # Sum entropy across action dimensions
-        return log_prob, entropy
-
-class Critic(nn.Module):
-    """
-    Critic Network (Value Function) for PPO.
-
-    Takes features extracted by a CNN and outputs a scalar value representing the estimated value of the state.
-    """
-    def __init__(self, features_dim: int):
-        """
-        Initializes the Critic network.
-
-        Args:
-            features_dim: Dimensionality of the input feature vector from the CNN.
-        """
-        super().__init__()
-        hidden_dim = 256 # Dimension of hidden layers
-        self.fc1 = nn.Linear(features_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        # Output layer for the state value (a single scalar)
-        self.fc_value = nn.Linear(hidden_dim, 1)
-
-        # Initialize the value layer weights/biases with small values
-        nn.init.uniform_(self.fc_value.weight, -3e-3, 3e-3)
-        nn.init.uniform_(self.fc_value.bias, -3e-3, 3e-3)
-
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
-        """
-        Performs the forward pass through the Critic network.
-
-        Args:
-            features: Feature tensor from the CNN (Batch, features_dim).
-
-        Returns:
-            The estimated state value (Batch,).
-        """
-        x = torch.relu(self.fc1(features))
-        x = torch.relu(self.fc2(x))
-        value = self.fc_value(x)
-        return value.squeeze(-1) # Remove the last dimension (size 1)
 
 class PPOAgent:
     def __init__(self, observation_space: spaces.Box, action_space: spaces.Box,
@@ -865,200 +1058,6 @@ class PPOAgent:
             print(f"Error: Missing key {e} in checkpoint file {path}. Structure mismatch?")
         except Exception as e:
             print(f"Error loading model components from {path}: {e}")
-
-class RewardShapingWrapper(gym.Wrapper):
-    """
-    Applies custom reward shaping to the CarRacing environment.
-
-    Adds rewards for velocity, survival, staying on track, and smooth driving.
-    Adds penalties for going off-track, jerky steering, and accelerating while turning sharply.
-    """
-    def __init__(self, env, velocity_weight: float = 0.005, survival_reward: float = 0.05,
-                 track_penalty: float = 2.0, steering_smooth_weight: float = 0.1,
-                 acceleration_while_turning_penalty_weight: float = 0.5):
-        """
-        Initializes the RewardShapingWrapper.
-
-        Args:
-            env: The Gymnasium environment to wrap.
-            velocity_weight: Weight for the speed-based reward component.
-            survival_reward: Constant reward added at each step.
-            track_penalty: Penalty applied for each step off-track.
-            steering_smooth_weight: Weight for the steering change penalty.
-            acceleration_while_turning_penalty_weight: Weight for the penalty for accelerating during sharp turns.
-        """
-        super().__init__(env)
-        self.velocity_weight = velocity_weight
-        self.survival_reward = survival_reward
-        self.track_penalty = track_penalty
-        self.steering_smooth_weight = steering_smooth_weight
-        self.acceleration_while_turning_penalty_weight = acceleration_while_turning_penalty_weight
-
-        # Track previous action for smoothness calculations
-        self.last_steering = 0.0
-        self.last_speed = 0.0
-
-        # Track cumulative reward components per episode
-        self.episode_velocity_rewards = 0.0
-        self.episode_survival_rewards = 0.0
-        self.episode_track_penalties = 0.0
-        self.episode_steering_penalties = 0.0
-        self.episode_acceleration_while_turning_penalties = 0.0
-        self.steps_off_track = 0
-
-        # Additional reward components
-        self.centerline_reward_weight = 0.5 # Reward for staying near the track center
-        self.track_return_weight = 0.3    # Reward for steering back towards the track when off-track
-        self.speed_consistency_weight = 0.05 # Penalty for large speed changes
-
-    def reset(self, **kwargs):
-        """Resets the environment and internal state trackers."""
-        self.last_steering = 0.0
-        self.last_speed = 0.0
-
-        # Reset episode trackers
-        self.episode_velocity_rewards = 0.0
-        self.episode_survival_rewards = 0.0
-        self.episode_track_penalties = 0.0
-        self.episode_steering_penalties = 0.0
-        self.episode_acceleration_while_turning_penalties = 0.0
-        self.steps_off_track = 0
-
-        obs, info = self.env.reset(**kwargs)
-
-        # Initialize reward components in the info dictionary
-        info['velocity_rewards'] = 0.0
-        info['survival_rewards'] = 0.0
-        info['track_penalties'] = 0.0
-        info['steering_penalties'] = 0.0
-        info['acceleration_while_turning_penalties'] = 0.0
-        info['steps_off_track'] = 0
-
-        return obs, info
-
-    def step(self, action):
-        """
-        Steps the environment and applies reward shaping.
-
-        Args:
-            action: The action taken by the agent.
-
-        Returns:
-            A tuple containing (observation, shaped_reward, terminated, truncated, info).
-            The info dictionary includes detailed reward components.
-        """
-        obs, reward, terminated, truncated, info = self.env.step(action)
-
-        # Ensure info is a dictionary
-        if info is None:
-             info = {}
-
-        # Extract action components
-        steering = action[0]
-        gas = action[1]
-        # brake = action[2] # Brake is not used in current reward shaping
-
-        # Initialize reward components for this step
-        step_velocity_reward = 0.0
-        step_survival_reward = 0.0
-        step_track_penalty = 0.0
-        step_steering_penalty = 0.0
-        step_acceleration_while_turning_penalty = 0.0
-        step_centerline_reward = 0.0
-        step_speed_consistency_reward = 0.0
-        step_track_return_reward = 0.0
-        off_track = False
-
-        # 1. Velocity rewards: Encourage higher speeds
-        speed = info.get('speed', 0.0) # Get speed from info if available
-        if speed > 0:
-            step_velocity_reward = speed * self.velocity_weight
-            reward += step_velocity_reward
-            self.episode_velocity_rewards += step_velocity_reward
-
-        # 2. Survival rewards: Encourage longer episodes
-        step_survival_reward = self.survival_reward
-        reward += step_survival_reward
-        self.episode_survival_rewards += step_survival_reward
-
-        # 3. Track adherence penalty: Penalize going off-track (onto grass)
-        #    Requires RGB observation input to this wrapper.
-        if len(obs.shape) == 3 and obs.shape[2] == 3: # Check if observation is RGB
-            # Check bottom center pixels for green color (indicative of grass)
-            car_area = obs[84:94, 42:54, :]
-            green_channel = car_area[:, :, 1]
-            red_channel = car_area[:, :, 0]
-
-            # Heuristic: High green and low red likely means off-track
-            off_track = np.mean(green_channel) > 150 and np.mean(red_channel) < 100
-
-            if off_track:
-                step_track_penalty = self.track_penalty
-                reward -= step_track_penalty
-                self.episode_track_penalties += step_track_penalty
-                self.steps_off_track += 1
-
-                # Add guidance reward to steer back towards the track center
-                # Simplified: assumes track is generally ahead
-                track_direction = np.array([1.0, 0.0])
-                # Approximate car direction based on steering angle
-                car_direction = np.array([np.cos(steering * np.pi / 2), np.sin(steering * np.pi / 2)])
-                # Reward alignment with track direction
-                step_track_return_reward = np.dot(track_direction, car_direction) * self.track_return_weight
-                reward += step_track_return_reward
-            else:
-                # 5. Centerline reward: Reward staying near the center (higher red channel value)
-                road_redness = np.mean(red_channel)
-                step_centerline_reward = min(road_redness / 200, 1.0) * self.centerline_reward_weight
-                reward += step_centerline_reward
-
-        # 4. Steering smoothness penalty: Penalize large changes in steering, especially at high speed
-        steering_change = abs(steering - self.last_steering)
-        step_steering_penalty = steering_change * self.steering_smooth_weight * (1.0 + speed * 0.1)
-        reward -= step_steering_penalty
-        self.episode_steering_penalties += step_steering_penalty
-
-        # 6. Speed consistency reward: Penalize large changes in speed
-        speed_change = abs(speed - self.last_speed)
-        step_speed_consistency_reward = -speed_change * self.speed_consistency_weight
-        reward += step_speed_consistency_reward
-
-        # 7. Acceleration while turning penalty: Penalize applying gas during sharp turns
-        steering_threshold = 0.4 # Angle threshold for penalty
-        gas_threshold = 0.1      # Gas threshold for penalty
-        if abs(steering) > steering_threshold and gas > gas_threshold:
-            step_acceleration_while_turning_penalty = (
-                self.acceleration_while_turning_penalty_weight *
-                (gas - gas_threshold) *
-                (abs(steering) - steering_threshold)
-            )
-            reward -= step_acceleration_while_turning_penalty
-            self.episode_acceleration_while_turning_penalties += step_acceleration_while_turning_penalty
-
-        # Update state for next step
-        self.last_steering = steering
-        self.last_speed = speed
-
-        # Add step-wise reward components to info
-        info['velocity_rewards'] = step_velocity_reward
-        info['survival_rewards'] = step_survival_reward
-        info['track_penalties'] = step_track_penalty
-        info['steering_penalties'] = step_steering_penalty
-        info['acceleration_while_turning_penalties'] = step_acceleration_while_turning_penalty
-        info['centerline_rewards'] = step_centerline_reward
-        info['speed_consistency_rewards'] = step_speed_consistency_reward
-        info['track_return_rewards'] = step_track_return_reward
-        info['off_track'] = off_track
-
-        # Add cumulative episode totals to info (useful for final info dict)
-        info['episode_velocity_rewards'] = self.episode_velocity_rewards
-        info['episode_survival_rewards'] = self.episode_survival_rewards
-        info['episode_track_penalties'] = self.episode_track_penalties
-        info['episode_steering_penalties'] = self.episode_steering_penalties
-        info['episode_acceleration_while_turning_penalties'] = self.episode_acceleration_while_turning_penalties
-        info['steps_off_track'] = self.steps_off_track
-
-        return obs, reward, terminated, truncated, info
 
 def load_checkpoint(agent: PPOAgent, checkpoint_path: str, config: dict, device: str):
     """
