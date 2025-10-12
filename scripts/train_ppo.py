@@ -30,7 +30,7 @@ config = {
     # Environment
     "env_id": "CarRacing-v3",           # ID for the Gymnasium environment
     "frame_stack": 4,                   # Number of consecutive frames to stack as input
-    "num_envs": 8,                      # Number of parallel environments for vectorized training (Change based on your CPU/GPU)
+    "num_envs": 32,                      # Number of parallel environments for vectorized training (Change based on your CPU/GPU)
     "max_episode_steps": 1000,          # Maximum steps allowed per episode
     "seed": 42,                         # Seed used for all evaluations and model training
 
@@ -1391,7 +1391,7 @@ if __name__ == "__main__":
                   f"GPUInfer: {gpu_inference_time:.2f}s({gpu_inf_pct:.1f}%) | "
                   f"GPULearn: {gpu_learning_time:.2f}s({gpu_learn_pct:.1f}%) | "
                   f"Buffer: {buffer_compute_time:.2f}s({buffer_pct:.1f}%) | "
-                  f"Total: {total_time:.2f}s")
+                  f"Total: {total_time:.2f}s | Need ~{(config['total_timesteps'] - global_step) / fps / 3600:.2f} hours")
 
             # --- Log metrics to TensorBoard ---
             writer.add_scalar("ppo/mean_reward_100", mean_reward_100, global_step)
