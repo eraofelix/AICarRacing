@@ -36,8 +36,8 @@ config = {
     "seed": 42,                         # Seed used for all evaluations and model training
 
     # PPO Core Parameters
-    "total_timesteps": 6_000_000,       # Total number of training steps across all environments
-    "learning_rate": 1e-4,              # Learning rate for the optimizers
+    "total_timesteps": 2_000_000,       # Total number of training steps across all environments
+    "learning_rate": 0.0004,              # Learning rate for the optimizers
     "buffer_size": 2048,                # Size of the rollout buffer per environment before updates
     "batch_size": 256,                  # Minibatch size for PPO updates
     "ppo_epochs": 6,                    # Number of optimization epochs per rollout
@@ -55,6 +55,7 @@ config = {
     "weight_decay": 1e-5,               # Weight decay (L2 regularization) for optimizers
     "fixed_std": False,                 # Whether to use a fixed or learned action standard deviation
     "lr_warmup_steps": 20000,            # Number of steps for learning rate warmup
+    "lr_decay_type": "cosine",          # Type of learning rate decay
     "min_learning_rate": 1e-8,          # Minimum learning rate allowed by the scheduler
 
     # Reward shaping
@@ -717,6 +718,7 @@ class PPOAgent:
         self.weight_decay = config.get("weight_decay", 1e-5)
         self.fixed_std = config.get("fixed_std", False)
         self.lr_warmup_steps = config.get("lr_warmup_steps", 5000)
+        self.lr_decay_type = config.get("lr_decay_type", "cosine")
         self.min_lr = config.get("min_learning_rate", 1e-7) # Store min_lr
 
         self.steps_done = 0 # Counter for learning rate scheduling
@@ -805,10 +807,14 @@ class PPOAgent:
             current_lr = self.initial_lr * (0.3 + 0.7 * alpha)
         else:
             progress = min((self.steps_done - self.lr_warmup_steps) / (total_timesteps - self.lr_warmup_steps), 1.0)
-            current_lr = self.initial_lr * 0.5 * (1.0 + np.cos(np.pi * progress))
+            if self.lr_decay_type == "cosine":
+                current_lr = self.initial_lr * 0.5 * (1.0 + np.cos(np.pi * progress))
+            elif self.lr_decay_type == "linear":
+                current_lr = self.initial_lr * (1.0 - progress)
+            else:
+                raise ValueError(f"Invalid learning rate decay type: {self.lr_decay_type}")
 
         current_lr = max(current_lr, self.min_lr) # Use self.min_lr
-        print(f"steps_done: {self.steps_done}, lr_warmup_steps: {self.lr_warmup_steps} | progress: {progress} | Current LR: {current_lr} | min_lr: {self.min_lr}")
         for param_group in self.actor_optimizer.param_groups:
             param_group['lr'] = current_lr
         for param_group in self.critic_optimizer.param_groups:
@@ -1157,7 +1163,6 @@ if __name__ == "__main__":
     os.makedirs(config["save_dir"], exist_ok=True)
     os.makedirs(config["log_dir"], exist_ok=True)
     
-    # Initialize wandb if enabled
     if config["use_wandb"]:
         wandb.init(
             entity=config["wandb_entity"],
@@ -1463,7 +1468,7 @@ if __name__ == "__main__":
             # --- Save Best Model ---
             if mean_reward_100 > best_mean_reward and mean_reward_100 > 100:
                 best_mean_reward = mean_reward_100
-                best_model_path = os.path.join(config["save_dir"], "best_model.pth")
+                best_model_path = os.path.join(config["save_dir"], f"best_model_{global_step}.pth")
                 print(f"New best mean reward: {best_mean_reward:.2f}. Saving model to {best_model_path}")
                 torch.save({
                     'feature_extractor_state_dict': agent.feature_extractor.state_dict(),
