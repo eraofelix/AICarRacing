@@ -36,7 +36,7 @@ config = {
 
     # PPO Core Parameters
     "total_timesteps": 6_000_000,       # Total number of training steps across all environments
-    "learning_rate": 3e-4,              # Learning rate for the optimizers
+    "learning_rate": 1e-4,              # Learning rate for the optimizers
     "buffer_size": 32768,                # Size of the rollout buffer per environment before updates
     "batch_size": 2048,                  # Minibatch size for PPO updates
     "ppo_epochs": 3,                    # Number of optimization epochs per rollout
@@ -1389,10 +1389,10 @@ if __name__ == "__main__":
 
             # --- Log metrics to TensorBoard ---
             writer.add_scalar("ppo/mean_reward_100", mean_reward_100, global_step)
-            writer.add_scalar("ppo/mean_length_100", mean_length_100, global_step)
+            # writer.add_scalar("ppo/mean_length_100", mean_length_100, global_step)
             if mean_rollout_reward != -1:
                 writer.add_scalar("ppo/mean_rollout_reward", mean_rollout_reward, global_step)
-            writer.add_scalar("ppo/fps", fps, global_step)
+            # writer.add_scalar("ppo/fps", fps, global_step)
             writer.add_scalar("ppo/learning_rate", current_lr, global_step)
             writer.add_scalar("ppo/policy_loss", metrics["policy_loss"], global_step)
             writer.add_scalar("ppo/value_loss", metrics["value_loss"], global_step)
