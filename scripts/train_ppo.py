@@ -1352,15 +1352,12 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
         gpu_learning_time += time.time() - learning_start
 
-        # Update learning rate based on schedule
         current_lr = agent.update_learning_rate(config['total_timesteps'], global_step)
 
-        # Increment rollout counter
         num_rollouts += 1
 
-        # --- Logging ---
-        if num_rollouts % config["log_interval"] == 0 and len(episode_rewards) > 0:
-            # --- Calculate performance metrics ---
+        # if num_rollouts % config["log_interval"] == 0 and len(episode_rewards) > 0:
+        if True:
             mean_reward_100 = np.mean(episode_rewards)
             mean_length_100 = np.mean(episode_lengths)
             rollout_duration = time.time() - rollout_start_time
