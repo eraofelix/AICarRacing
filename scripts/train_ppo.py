@@ -30,16 +30,16 @@ config = {
     # Environment
     "env_id": "CarRacing-v3",           # ID for the Gymnasium environment
     "frame_stack": 4,                   # Number of consecutive frames to stack as input
-    "num_envs": 8,                      # Number of parallel environments for vectorized training (Change based on your CPU/GPU)
+    "num_envs": 32,                      # Number of parallel environments for vectorized training (Change based on your CPU/GPU)
     "max_episode_steps": 1000,          # Maximum steps allowed per episode
     "seed": 42,                         # Seed used for all evaluations and model training
 
     # PPO Core Parameters
     "total_timesteps": 6_000_000,       # Total number of training steps across all environments
-    "learning_rate": 1e-4,              # Learning rate for the optimizers
-    "buffer_size": 2048,                # Size of the rollout buffer per environment before updates
-    "batch_size": 256,                  # Minibatch size for PPO updates
-    "ppo_epochs": 6,                    # Number of optimization epochs per rollout
+    "learning_rate": 3e-4,              # Learning rate for the optimizers
+    "buffer_size": 32768,                # Size of the rollout buffer per environment before updates
+    "batch_size": 2048,                  # Minibatch size for PPO updates
+    "ppo_epochs": 3,                    # Number of optimization epochs per rollout
     "gamma": 0.99,                      # Discount factor for future rewards
     "gae_lambda": 0.95,                  # Factor for Generalized Advantage Estimation (GAE)
     "clip_epsilon": 0.15,               # Clipping parameter for the PPO policy loss
@@ -53,8 +53,8 @@ config = {
     "initial_action_std": 0.75,          # Initial standard deviation for the action distribution
     "weight_decay": 1e-5,               # Weight decay (L2 regularization) for optimizers
     "fixed_std": False,                 # Whether to use a fixed or learned action standard deviation
-    "lr_warmup_steps": 5000,            # Number of steps for learning rate warmup
-    "min_learning_rate": 1e-8,          # Minimum learning rate allowed by the scheduler
+    "lr_warmup_steps": 10000,            # Number of steps for learning rate warmup
+    "min_learning_rate": 1e-6,          # Minimum learning rate allowed by the scheduler
 
     # Reward shaping
     "use_reward_shaping": True,         # Flag to enable custom reward shaping
@@ -65,8 +65,8 @@ config = {
     "acceleration_while_turning_penalty_weight": 0.8, # Weight for penalizing acceleration during sharp turns
 
     # Performance optimizations
-    "torch_num_threads": 7,             # Number of threads for PyTorch CPU operations
-    "mixed_precision": False,           # Flag to enable/disable mixed precision training (requires CUDA)
+    "torch_num_threads": 1,             # Number of threads for PyTorch CPU operations
+    "mixed_precision": True,           # Flag to enable/disable mixed precision training (requires CUDA)
     "pin_memory": True,                 # Flag to use pinned memory for faster CPU-GPU data transfer
     "async_envs": True,                # Flag to use asynchronous vectorized environments
 
