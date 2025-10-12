@@ -1099,9 +1099,9 @@ def make_env(env_id: str, seed: int, frame_stack: int, max_episode_steps: int, i
     def _init():
         env_seed = seed + idx
         env = gym.make(env_id, continuous=True, domain_randomize=False, render_mode=None)
-        env.unwrapped.spec.max_episode_steps = max_episode_steps
-        if hasattr(env.unwrapped, 'render_mode'):
-            env.unwrapped.render_mode = None
+        # env.unwrapped.spec.max_episode_steps = max_episode_steps
+        # if hasattr(env.unwrapped, 'render_mode'):
+        #     env.unwrapped.render_mode = None
         env.reset(seed=env_seed)
         env.action_space.seed(env_seed)
         if config["use_reward_shaping"]:
@@ -1225,8 +1225,8 @@ if __name__ == "__main__":
             gpu_start = time.time()
             with torch.no_grad():
                 actions, values, log_probs = agent.act(obs_tensor)
-            if config["device"] == "cuda":
-                torch.cuda.synchronize()
+            # if config["device"] == "cuda":
+            #     torch.cuda.synchronize()
             gpu_inference_time += time.time() - gpu_start
 
             # Environment interaction timing
