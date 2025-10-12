@@ -53,7 +53,7 @@ config = {
     "initial_action_std": 0.75,          # Initial standard deviation for the action distribution
     "weight_decay": 1e-5,               # Weight decay (L2 regularization) for optimizers
     "fixed_std": False,                 # Whether to use a fixed or learned action standard deviation
-    "lr_warmup_steps": 5000,            # Number of steps for learning rate warmup
+    "lr_warmup_steps": 20000,            # Number of steps for learning rate warmup
     "min_learning_rate": 1e-8,          # Minimum learning rate allowed by the scheduler
 
     # Reward shaping
@@ -788,8 +788,8 @@ class PPOAgent:
         """
         Implements linear warmup followed by cosine decay.
         """
-        # self.steps_done = global_step # Increment internal step counter
-        self.steps_done += 1 # Increment internal step counter
+        self.steps_done = global_step # Increment internal step counter
+        # self.steps_done += 1 # Increment internal step counter
 
         # Warmup Phase: Linearly increase LR from 30% to 100% of initial_lr
         progress = 0.0
@@ -1119,7 +1119,6 @@ def make_env(env_id: str, seed: int, frame_stack: int, max_episode_steps: int, i
     return _init
 
 if __name__ == "__main__":
-    # --- Argument Parsing ---
     parser = argparse.ArgumentParser(description="Train a PPO agent for CarRacing-v3")
     parser.add_argument("--checkpoint", type=str, default=None,  help="Path to a checkpoint file to resume training from.")
     parser.add_argument("--steps", type=int, default=None, help="Override the total number of training timesteps defined in the config.")
@@ -1250,14 +1249,12 @@ if __name__ == "__main__":
             # Check if any environments finished an episode using VecEnv's info dict
             if "_final_info" in infos:
                 # Identify which environments finished
-                finished_mask = infos["_final_info"]
-                if np.any(finished_mask):
-                    # Extract final info for completed episodes
-                    final_infos = infos["final_info"][finished_mask]
-                    env_indices = np.where(finished_mask)[0] # Get original indices
-
+                finished_mask = infos["_final_info"]  # 用于在VecEnv里多个env里哪个env环境刚刚结束
+                if np.any(finished_mask):             # 如果任意env环境刚刚结束
+                    final_infos = infos["final_info"][finished_mask] # 获取刚刚结束的env环境的信息
+                    env_indices = np.where(finished_mask)[0] # 获取刚刚结束的env环境的索引
                     for i, final_info in enumerate(final_infos):
-                        if final_info is not None and "episode" in final_info:
+                        if final_info is not None and "episode" in final_info:  # 一个 episode 结束时会把整集统计打包进 info["episode"]
                             ep_rew = final_info["episode"]["r"]
                             ep_len = final_info["episode"]["l"]
                             episode_rewards.append(ep_rew) # Add to logging queue (100 ep avg)
@@ -1303,11 +1300,6 @@ if __name__ == "__main__":
                         current_episode_rewards[i] = 0
                         current_episode_lengths[i] = 0
 
-                # --- BEGIN MOVED TENSORBOARD LOGGING ---
-                # Log averaged components if available (after checking all finished envs)
-                # Note: This logging now happens *inside* the rollout loop whenever an episode ends,
-                # rather than only at the end of the logging interval.
-                # This might lead to more frequent but potentially noisier component logs.
                 # Alternatively, accumulate these lists outside this loop and log them
                 # during the main logging phase (num_rollouts % log_interval == 0).
                 # For simplicity now, we log immediately.
@@ -1318,12 +1310,8 @@ if __name__ == "__main__":
                 if accel_turn_pens: writer.add_scalar("penalties/mean_accel_turn", np.mean(accel_turn_pens), global_step)
                 if steps_off: writer.add_scalar("driving/mean_steps_off_track", np.mean(steps_off), global_step)
                 if off_track_pcts: writer.add_scalar("driving/mean_percent_off_track", np.mean(off_track_pcts), global_step)
-                # --- END MOVED TENSORBOARD LOGGING ---
 
-            # Update global step count (total steps across all envs)
             global_step += config["num_envs"]
-
-            # Check if total timesteps limit is reached
             if global_step >= config["total_timesteps"]:
                 print(f"Reached total timesteps ({config['total_timesteps']}). Finishing rollout.")
                 break # Exit the inner rollout loop
@@ -1342,18 +1330,16 @@ if __name__ == "__main__":
         buffer_compute_time += time.time() - buffer_start
 
         # --- Learning Phase ---
-        # Update agent policy and value function using the collected rollout data
         learning_start = time.time()
         if config["mixed_precision"] and config["device"] == "cuda":
             metrics = agent.learn_mixed_precision(buffer, scaler) # Use mixed precision update
         else:
             metrics = agent.learn(buffer) # Use standard precision update
-        if config["device"] == "cuda":
-            torch.cuda.synchronize()
+        # if config["device"] == "cuda":
+        #     torch.cuda.synchronize()
         gpu_learning_time += time.time() - learning_start
 
         current_lr = agent.update_learning_rate(config['total_timesteps'], global_step)
-
         num_rollouts += 1
 
         # if num_rollouts % config["log_interval"] == 0 and len(episode_rewards) > 0:
@@ -1363,14 +1349,8 @@ if __name__ == "__main__":
             rollout_duration = time.time() - rollout_start_time
             steps_in_rollout = buffer.size() # Get actual number of steps collected
             fps = int(steps_in_rollout / rollout_duration) if rollout_duration > 0 else 0
-
-            # --- Calculate Mean Rollout Reward using the accumulated list ---
             mean_rollout_reward = np.mean(rollout_episode_rewards) if rollout_episode_rewards else -1 # Use -1 if no episodes finished in interval
-
-            # --- Print summary to console ---
             rollout_reward_str = f"{mean_rollout_reward:.2f}({len(rollout_episode_rewards)})" if mean_rollout_reward != -1 else "N/A"
-            
-            # Calculate timing percentages
             total_time = env_interaction_time + gpu_inference_time + gpu_learning_time + buffer_compute_time
             env_pct = (env_interaction_time / total_time * 100) if total_time > 0 else 0
             gpu_inf_pct = (gpu_inference_time / total_time * 100) if total_time > 0 else 0
@@ -1404,7 +1384,7 @@ if __name__ == "__main__":
             writer.add_scalar("ppo/clip_fraction", metrics["clip_fraction"], global_step)
 
             # --- Save Best Model ---
-            if mean_reward_100 > best_mean_reward and num_rollouts > 500:
+            if mean_reward_100 > best_mean_reward and mean_reward_100 > 100:
                 best_mean_reward = mean_reward_100
                 best_model_path = os.path.join(config["save_dir"], "best_model.pth")
                 print(f"New best mean reward: {best_mean_reward:.2f}. Saving model to {best_model_path}")
@@ -1433,7 +1413,6 @@ if __name__ == "__main__":
                 'mean_reward': best_mean_reward, # Save current best reward
             }, checkpoint_path)
 
-        # Check again if total timesteps reached after learning phase
         if global_step >= config["total_timesteps"]:
             print("Total timesteps reached. Exiting training loop.")
             break
