@@ -1203,18 +1203,30 @@ if __name__ == "__main__":
         rollout_start_time = time.time()
         steps_per_rollout = buffer.buffer_size # Steps to collect per environment in this rollout
         last_dones = np.zeros(config["num_envs"], dtype=bool) # Track dones from the final step
+        
+        # Timing variables for detailed performance analysis
+        env_interaction_time = 0.0
+        gpu_inference_time = 0.0
+        gpu_learning_time = 0.0
+        buffer_compute_time = 0.0
 
         # --- Rollout Phase ---
         for step in range(steps_per_rollout):
             # Ensure observations are tensors on the correct device
             obs_tensor = torch.as_tensor(observations, dtype=torch.float32, device=config["device"])
 
-            # Agent selects actions based on observations
+            # GPU Inference timing
+            gpu_start = time.time()
             with torch.no_grad():
                 actions, values, log_probs = agent.act(obs_tensor)
+            if config["device"] == "cuda":
+                torch.cuda.synchronize()
+            gpu_inference_time += time.time() - gpu_start
 
-            # Environment steps forward with the selected actions
+            # Environment interaction timing
+            env_start = time.time()
             next_observations, rewards, terminateds, truncateds, infos = env.step(actions)
+            env_interaction_time += time.time() - env_start
             dones = terminateds | truncateds # Combine terminated and truncated flags
 
             # Update trackers for current episodes
@@ -1312,6 +1324,7 @@ if __name__ == "__main__":
 
         # --- Post-Rollout Phase ---
         # Compute advantages and returns after collecting the rollout data
+        buffer_start = time.time()
         with torch.no_grad():
             # Get value estimate for the last observation in the rollout
             obs_tensor = torch.as_tensor(observations, dtype=torch.float32, device=config["device"])
@@ -1320,13 +1333,18 @@ if __name__ == "__main__":
 
         # Calculate GAE and returns using collected data and last value estimate
         buffer.compute_returns_and_advantages(last_values, last_dones)
+        buffer_compute_time += time.time() - buffer_start
 
         # --- Learning Phase ---
         # Update agent policy and value function using the collected rollout data
+        learning_start = time.time()
         if config["mixed_precision"] and config["device"] == "cuda":
             metrics = agent.learn_mixed_precision(buffer, scaler) # Use mixed precision update
         else:
             metrics = agent.learn(buffer) # Use standard precision update
+        if config["device"] == "cuda":
+            torch.cuda.synchronize()
+        gpu_learning_time += time.time() - learning_start
 
         # Update learning rate based on schedule
         current_lr = agent.update_learning_rate(config['total_timesteps'])
@@ -1348,12 +1366,26 @@ if __name__ == "__main__":
 
             # --- Print summary to console ---
             rollout_reward_str = f"{mean_rollout_reward:.2f}({len(rollout_episode_rewards)})" if mean_rollout_reward != -1 else "N/A"
+            
+            # Calculate timing percentages
+            total_time = env_interaction_time + gpu_inference_time + gpu_learning_time + buffer_compute_time
+            env_pct = (env_interaction_time / total_time * 100) if total_time > 0 else 0
+            gpu_inf_pct = (gpu_inference_time / total_time * 100) if total_time > 0 else 0
+            gpu_learn_pct = (gpu_learning_time / total_time * 100) if total_time > 0 else 0
+            buffer_pct = (buffer_compute_time / total_time * 100) if total_time > 0 else 0
+            
             print(f"Rollout {num_rollouts:3d} | Step {global_step:7d}/{config['total_timesteps']:7d} | "
                     f"Reward100: {mean_reward_100:6.2f} | RewardRoll: {rollout_reward_str:>10s} | "
                     f"Length: {mean_length_100:5.1f} | FPS: {fps:4d} | "
                     f"LR: {current_lr:.2e} | PiLoss: {metrics['policy_loss']:6.4f} | "
                     f"VLoss: {metrics['value_loss']:6.4f} | Ent: {metrics['entropy_loss']:6.4f} | "
                     f"KL: {metrics['approx_kl']:6.4f} | Clip: {metrics['clip_fraction']:6.4f}")
+            
+            print(f"Timing | Env: {env_interaction_time:.2f}s({env_pct:.1f}%) | "
+                  f"GPUInfer: {gpu_inference_time:.2f}s({gpu_inf_pct:.1f}%) | "
+                  f"GPULearn: {gpu_learning_time:.2f}s({gpu_learn_pct:.1f}%) | "
+                  f"Buffer: {buffer_compute_time:.2f}s({buffer_pct:.1f}%) | "
+                  f"Total: {total_time:.2f}s")
 
             # --- Log metrics to TensorBoard ---
             writer.add_scalar("ppo/mean_reward_100", mean_reward_100, global_step)
