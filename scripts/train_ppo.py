@@ -30,16 +30,16 @@ config = {
     # Environment
     "env_id": "CarRacing-v3",           # ID for the Gymnasium environment
     "frame_stack": 4,                   # Number of consecutive frames to stack as input
-    "num_envs": 32,                      # Number of parallel environments for vectorized training (Change based on your CPU/GPU)
+    "num_envs": 8,                      # Number of parallel environments for vectorized training (Change based on your CPU/GPU)
     "max_episode_steps": 1000,          # Maximum steps allowed per episode
     "seed": 42,                         # Seed used for all evaluations and model training
 
     # PPO Core Parameters
     "total_timesteps": 6_000_000,       # Total number of training steps across all environments
     "learning_rate": 1e-4,              # Learning rate for the optimizers
-    "buffer_size": 32768,                # Size of the rollout buffer per environment before updates
-    "batch_size": 2048,                  # Minibatch size for PPO updates
-    "ppo_epochs": 3,                    # Number of optimization epochs per rollout
+    "buffer_size": 2048,                # Size of the rollout buffer per environment before updates
+    "batch_size": 256,                  # Minibatch size for PPO updates
+    "ppo_epochs": 6,                    # Number of optimization epochs per rollout
     "gamma": 0.99,                      # Discount factor for future rewards
     "gae_lambda": 0.95,                  # Factor for Generalized Advantage Estimation (GAE)
     "clip_epsilon": 0.15,               # Clipping parameter for the PPO policy loss
@@ -53,8 +53,8 @@ config = {
     "initial_action_std": 0.75,          # Initial standard deviation for the action distribution
     "weight_decay": 1e-5,               # Weight decay (L2 regularization) for optimizers
     "fixed_std": False,                 # Whether to use a fixed or learned action standard deviation
-    "lr_warmup_steps": 10000,            # Number of steps for learning rate warmup
-    "min_learning_rate": 1e-6,          # Minimum learning rate allowed by the scheduler
+    "lr_warmup_steps": 5000,            # Number of steps for learning rate warmup
+    "min_learning_rate": 1e-8,          # Minimum learning rate allowed by the scheduler
 
     # Reward shaping
     "use_reward_shaping": True,         # Flag to enable custom reward shaping
@@ -65,8 +65,8 @@ config = {
     "acceleration_while_turning_penalty_weight": 0.8, # Weight for penalizing acceleration during sharp turns
 
     # Performance optimizations
-    "torch_num_threads": 1,             # Number of threads for PyTorch CPU operations
-    "mixed_precision": True,           # Flag to enable/disable mixed precision training (requires CUDA)
+    "torch_num_threads": 7,             # Number of threads for PyTorch CPU operations
+    "mixed_precision": False,           # Flag to enable/disable mixed precision training (requires CUDA)
     "pin_memory": True,                 # Flag to use pinned memory for faster CPU-GPU data transfer
     "async_envs": True,                # Flag to use asynchronous vectorized environments
 
@@ -784,13 +784,15 @@ class PPOAgent:
 
         return action_np, value_np, log_prob_np
 
-    def update_learning_rate(self, total_timesteps: int) -> float:
+    def update_learning_rate(self, total_timesteps: int, global_step: int) -> float:
         """
         Implements linear warmup followed by cosine decay.
         """
+        # self.steps_done = global_step # Increment internal step counter
         self.steps_done += 1 # Increment internal step counter
 
         # Warmup Phase: Linearly increase LR from 30% to 100% of initial_lr
+        progress = 0.0
         if self.steps_done < self.lr_warmup_steps:
             alpha = self.steps_done / self.lr_warmup_steps
             current_lr = self.initial_lr * (0.3 + 0.7 * alpha)
@@ -799,6 +801,7 @@ class PPOAgent:
             current_lr = self.initial_lr * 0.5 * (1.0 + np.cos(np.pi * progress))
 
         current_lr = max(current_lr, self.min_lr) # Use self.min_lr
+        print(f"steps_done: {self.steps_done}, lr_warmup_steps: {self.lr_warmup_steps} | progress: {progress} | Current LR: {current_lr} | min_lr: {self.min_lr}")
         for param_group in self.actor_optimizer.param_groups:
             param_group['lr'] = current_lr
         for param_group in self.critic_optimizer.param_groups:
@@ -1096,6 +1099,9 @@ def make_env(env_id: str, seed: int, frame_stack: int, max_episode_steps: int, i
     def _init():
         env_seed = seed + idx
         env = gym.make(env_id, continuous=True, domain_randomize=False, render_mode=None)
+        env.unwrapped.spec.max_episode_steps = max_episode_steps
+        if hasattr(env.unwrapped, 'render_mode'):
+            env.unwrapped.render_mode = None
         env.reset(seed=env_seed)
         env.action_space.seed(env_seed)
         if config["use_reward_shaping"]:
@@ -1347,7 +1353,7 @@ if __name__ == "__main__":
         gpu_learning_time += time.time() - learning_start
 
         # Update learning rate based on schedule
-        current_lr = agent.update_learning_rate(config['total_timesteps'])
+        current_lr = agent.update_learning_rate(config['total_timesteps'], global_step)
 
         # Increment rollout counter
         num_rollouts += 1
@@ -1389,10 +1395,10 @@ if __name__ == "__main__":
 
             # --- Log metrics to TensorBoard ---
             writer.add_scalar("ppo/mean_reward_100", mean_reward_100, global_step)
-            # writer.add_scalar("ppo/mean_length_100", mean_length_100, global_step)
+            writer.add_scalar("ppo/mean_length_100", mean_length_100, global_step)
             if mean_rollout_reward != -1:
                 writer.add_scalar("ppo/mean_rollout_reward", mean_rollout_reward, global_step)
-            # writer.add_scalar("ppo/fps", fps, global_step)
+            writer.add_scalar("ppo/fps", fps, global_step)
             writer.add_scalar("ppo/learning_rate", current_lr, global_step)
             writer.add_scalar("ppo/policy_loss", metrics["policy_loss"], global_step)
             writer.add_scalar("ppo/value_loss", metrics["value_loss"], global_step)
