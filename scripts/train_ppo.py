@@ -18,6 +18,7 @@ import cv2
 from gymnasium import spaces
 from gymnasium.spaces import Box
 from datetime import datetime
+import wandb
 
 # Constants for clamping the log standard deviation
 LOG_STD_MAX = 2
@@ -77,6 +78,12 @@ config = {
     "log_dir": f"./logs/ppo_carracing_{LAUNCH_DATE}",     # Directory to save TensorBoard logs
     "checkpoint_path": "./models/ppo_carracing/restart515.pth", # Path to load a pre-trained model checkpoint
     "device": "cuda" if torch.cuda.is_available() else "cpu", # Automatically select CUDA if available, else CPU
+    
+    # Wandb configuration
+    "use_wandb": True,                  # Enable/disable wandb logging
+    "wandb_project": "AICarRacing-PPO", # Wandb project name
+    "wandb_entity": None,              # Wandb entity (team name), None for personal account
+    "wandb_run_name": f"ppo_carracing_{LAUNCH_DATE}", # Custom run name
 }
 
 # Set performance-enhancing environment variables for multi-threading
@@ -1124,19 +1131,43 @@ if __name__ == "__main__":
     parser.add_argument("--steps", type=int, default=None, help="Override the total number of training timesteps defined in the config.")
     parser.add_argument("--seed", type=int, default=None, help="Override the random seed defined in the config.")
     parser.add_argument("--log-dir", type=str, default=None, help="Override the TensorBoard log directory defined in the config.")
+    parser.add_argument("--wandb-project", type=str, default=None, help="Override the wandb project name.")
+    parser.add_argument("--wandb-entity", type=str, default=None, help="Override the wandb entity (team name).")
+    parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging.")
     args = parser.parse_args()
 
     config["checkpoint_path"] = args.checkpoint if args.checkpoint else config["checkpoint_path"]
     config["total_timesteps"] = args.steps if args.steps else config["total_timesteps"]
     config["seed"] = args.seed if args.seed else config["seed"]
     config["log_dir"] = args.log_dir if args.log_dir else config["log_dir"]
+    
+    # Update wandb config from command line arguments
+    if args.wandb_project:
+        config["wandb_project"] = args.wandb_project
+    if args.wandb_entity:
+        config["wandb_entity"] = args.wandb_entity
+    if args.no_wandb:
+        config["use_wandb"] = False
 
     print(f"Mixed Precision: {'Enabled' if config['mixed_precision'] else 'Disabled'}")
     print(f"Resuming from Checkpoint: {config['checkpoint_path'] if config['checkpoint_path'] else 'None'}")
+    print(f"Wandb Logging: {'Enabled' if config['use_wandb'] else 'Disabled'}")
 
     set_seeds(config["seed"])
     os.makedirs(config["save_dir"], exist_ok=True)
     os.makedirs(config["log_dir"], exist_ok=True)
+    
+    # Initialize wandb if enabled
+    if config["use_wandb"]:
+        wandb.init(
+            entity=config["wandb_entity"],
+            project=config["wandb_project"],
+            name=config["wandb_run_name"],
+            config=config,
+            tags=["PPO", "CarRacing", "Reinforcement Learning"],
+            notes=f"PPO training for CarRacing-v3 with {config['num_envs']} parallel environments"
+        )
+        print(f"Wandb initialized: {wandb.run.url}")
 
     # --- Environment Setup ---
     print(f"Creating {config['num_envs']} parallel environments...")
@@ -1310,6 +1341,20 @@ if __name__ == "__main__":
                 if accel_turn_pens: writer.add_scalar("penalties/mean_accel_turn", np.mean(accel_turn_pens), global_step)
                 if steps_off: writer.add_scalar("driving/mean_steps_off_track", np.mean(steps_off), global_step)
                 if off_track_pcts: writer.add_scalar("driving/mean_percent_off_track", np.mean(off_track_pcts), global_step)
+                
+                # Log reward components to wandb
+                if config["use_wandb"]:
+                    wandb_reward_metrics = {}
+                    if velocity_rews: wandb_reward_metrics["rewards/mean_velocity"] = np.mean(velocity_rews)
+                    if survival_rews: wandb_reward_metrics["rewards/mean_survival"] = np.mean(survival_rews)
+                    if track_pens: wandb_reward_metrics["penalties/mean_track"] = np.mean(track_pens)
+                    if steering_pens: wandb_reward_metrics["penalties/mean_steering"] = np.mean(steering_pens)
+                    if accel_turn_pens: wandb_reward_metrics["penalties/mean_accel_turn"] = np.mean(accel_turn_pens)
+                    if steps_off: wandb_reward_metrics["driving/mean_steps_off_track"] = np.mean(steps_off)
+                    if off_track_pcts: wandb_reward_metrics["driving/mean_percent_off_track"] = np.mean(off_track_pcts)
+                    
+                    if wandb_reward_metrics:
+                        wandb.log(wandb_reward_metrics, step=global_step)
 
             global_step += config["num_envs"]
             if global_step >= config["total_timesteps"]:
@@ -1382,6 +1427,38 @@ if __name__ == "__main__":
             writer.add_scalar("ppo/entropy", metrics["entropy_loss"], global_step)
             writer.add_scalar("ppo/approx_kl", metrics["approx_kl"], global_step)
             writer.add_scalar("ppo/clip_fraction", metrics["clip_fraction"], global_step)
+            
+            # --- Log metrics to Wandb ---
+            if config["use_wandb"]:
+                wandb_metrics = {
+                    "ppo/mean_reward_100": mean_reward_100,
+                    "ppo/mean_length_100": mean_length_100,
+                    "ppo/fps": fps,
+                    "ppo/learning_rate": current_lr,
+                    "ppo/policy_loss": metrics["policy_loss"],
+                    "ppo/value_loss": metrics["value_loss"],
+                    "ppo/entropy": metrics["entropy_loss"],
+                    "ppo/approx_kl": metrics["approx_kl"],
+                    "ppo/clip_fraction": metrics["clip_fraction"],
+                    "timing/env_interaction_time": env_interaction_time,
+                    "timing/gpu_inference_time": gpu_inference_time,
+                    "timing/gpu_learning_time": gpu_learning_time,
+                    "timing/buffer_compute_time": buffer_compute_time,
+                    "timing/total_time": total_time,
+                    "timing/env_percentage": env_pct,
+                    "timing/gpu_inf_percentage": gpu_inf_pct,
+                    "timing/gpu_learn_percentage": gpu_learn_pct,
+                    "timing/buffer_percentage": buffer_pct,
+                    "rollout/num_rollouts": num_rollouts,
+                    "rollout/global_step": global_step,
+                    "rollout/rollout_duration": rollout_duration,
+                    "rollout/steps_in_rollout": steps_in_rollout
+                }
+                
+                if mean_rollout_reward != -1:
+                    wandb_metrics["ppo/mean_rollout_reward"] = mean_rollout_reward
+                
+                wandb.log(wandb_metrics, step=global_step)
 
             # --- Save Best Model ---
             if mean_reward_100 > best_mean_reward and mean_reward_100 > 100:
@@ -1396,6 +1473,10 @@ if __name__ == "__main__":
                     'mean_reward': mean_reward_100, # Save the reward that triggered the save
                     'config': config # Optionally save the config used
                 }, best_model_path)
+                
+                # Log best model to wandb
+                if config["use_wandb"]:
+                    wandb.log({"best_mean_reward": best_mean_reward}, step=global_step)
 
         # --- Save Checkpoint Periodically ---
         if num_rollouts > 0 and num_rollouts % config["save_interval"] == 0:
@@ -1419,3 +1500,6 @@ if __name__ == "__main__":
 
     env.close()
     writer.close()
+    
+    if config["use_wandb"]:
+        wandb.finish()
