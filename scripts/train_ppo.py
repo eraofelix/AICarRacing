@@ -36,8 +36,8 @@ config = {
     "seed": 42,                         # Seed used for all evaluations and model training
 
     # PPO Core Parameters
-    "total_timesteps": 2_000_000,       # Total number of training steps across all environments
-    "learning_rate": 0.0004,              # Learning rate for the optimizers
+    "total_timesteps": 1_000_000,       # Total number of training steps across all environments
+    "learning_rate": 0.0005,              # Learning rate for the optimizers
     "buffer_size": 2048,                # Size of the rollout buffer per environment before updates
     "batch_size": 256,                  # Minibatch size for PPO updates
     "ppo_epochs": 6,                    # Number of optimization epochs per rollout
@@ -1166,6 +1166,7 @@ if __name__ == "__main__":
     if config["use_wandb"]:
         wandb.init(
             entity=config["wandb_entity"],
+            group="n",
             project=config["wandb_project"],
             name=config["wandb_run_name"],
             config=config,
@@ -1460,7 +1461,7 @@ if __name__ == "__main__":
                     "rollout/steps_in_rollout": steps_in_rollout
                 }
                 
-                if mean_rollout_reward != -1:
+                if mean_rollout_reward > -1:
                     wandb_metrics["ppo/mean_rollout_reward"] = mean_rollout_reward
                 
                 wandb.log(wandb_metrics, step=global_step)
