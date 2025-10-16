@@ -1401,81 +1401,79 @@ if __name__ == "__main__":
         current_lr = agent.update_learning_rate(config['total_timesteps'], global_step)
         num_rollouts += 1
 
-        # if num_rollouts % config["log_interval"] == 0 and len(episode_rewards) > 0:
-        if True:
-            mean_reward_100 = np.mean(episode_rewards)
-            mean_length_100 = np.mean(episode_lengths)
-            rollout_duration = time.time() - rollout_start_time
-            steps_in_rollout = buffer.size() # Get actual number of steps collected
-            fps = int(steps_in_rollout / rollout_duration) if rollout_duration > 0 else 0
-            mean_rollout_reward = np.mean(rollout_episode_rewards) if rollout_episode_rewards else -1 # Use -1 if no episodes finished in interval
-            rollout_reward_str = f"{mean_rollout_reward:.2f}({len(rollout_episode_rewards)})" if mean_rollout_reward != -1 else "N/A"
-            total_time = env_interaction_time + gpu_inference_time + gpu_learning_time + buffer_compute_time
-            env_pct = (env_interaction_time / total_time * 100) if total_time > 0 else 0
-            gpu_inf_pct = (gpu_inference_time / total_time * 100) if total_time > 0 else 0
-            gpu_learn_pct = (gpu_learning_time / total_time * 100) if total_time > 0 else 0
-            buffer_pct = (buffer_compute_time / total_time * 100) if total_time > 0 else 0
-            
-            print(f"Rollout {num_rollouts:3d} | Step {global_step:7d}/{config['total_timesteps']:7d} | "
-                    f"Reward100: {mean_reward_100:6.2f} | RewardRoll: {rollout_reward_str:>10s} | "
-                    f"Length: {mean_length_100:5.1f} | FPS: {fps:4d} | "
-                    f"LR: {current_lr:.2e} | PiLoss: {metrics['policy_loss']:6.4f} | "
-                    f"VLoss: {metrics['value_loss']:6.4f} | Ent: {metrics['entropy_loss']:6.4f} | "
-                    f"KL: {metrics['approx_kl']:6.4f} | Clip: {metrics['clip_fraction']:6.4f}")
-            
-            print(f"Timing | Env: {env_interaction_time:.2f}s({env_pct:.1f}%) | "
-                  f"GPUInfer: {gpu_inference_time:.2f}s({gpu_inf_pct:.1f}%) | "
-                  f"GPULearn: {gpu_learning_time:.2f}s({gpu_learn_pct:.1f}%) | "
-                  f"Buffer: {buffer_compute_time:.2f}s({buffer_pct:.1f}%) | "
-                  f"Total: {total_time:.2f}s | Need ~{(config['total_timesteps'] - global_step) / fps / 3600:.2f} hours")
+        mean_reward_100 = np.mean(episode_rewards)
+        mean_length_100 = np.mean(episode_lengths)
+        rollout_duration = time.time() - rollout_start_time
+        steps_in_rollout = buffer.size() # Get actual number of steps collected
+        fps = int(steps_in_rollout / rollout_duration) if rollout_duration > 0 else 0
+        mean_rollout_reward = np.mean(rollout_episode_rewards) if rollout_episode_rewards else -1 # Use -1 if no episodes finished in interval
+        rollout_reward_str = f"{mean_rollout_reward:.2f}({len(rollout_episode_rewards)})" if mean_rollout_reward != -1 else "N/A"
+        total_time = env_interaction_time + gpu_inference_time + gpu_learning_time + buffer_compute_time
+        env_pct = (env_interaction_time / total_time * 100) if total_time > 0 else 0
+        gpu_inf_pct = (gpu_inference_time / total_time * 100) if total_time > 0 else 0
+        gpu_learn_pct = (gpu_learning_time / total_time * 100) if total_time > 0 else 0
+        buffer_pct = (buffer_compute_time / total_time * 100) if total_time > 0 else 0
+        
+        print(f"Rollout {num_rollouts:3d} | Step {global_step:7d}/{config['total_timesteps']:7d} | "
+                f"Reward100: {mean_reward_100:6.2f} | RewardRoll: {rollout_reward_str:>10s} | "
+                f"Length: {mean_length_100:5.1f} | FPS: {fps:4d} | "
+                f"LR: {current_lr:.2e} | PiLoss: {metrics['policy_loss']:6.4f} | "
+                f"VLoss: {metrics['value_loss']:6.4f} | Ent: {metrics['entropy_loss']:6.4f} | "
+                f"KL: {metrics['approx_kl']:6.4f} | Clip: {metrics['clip_fraction']:6.4f}")
+        
+        print(f"Timing | Env: {env_interaction_time:.2f}s({env_pct:.1f}%) | "
+                f"GPUInfer: {gpu_inference_time:.2f}s({gpu_inf_pct:.1f}%) | "
+                f"GPULearn: {gpu_learning_time:.2f}s({gpu_learn_pct:.1f}%) | "
+                f"Buffer: {buffer_compute_time:.2f}s({buffer_pct:.1f}%) | "
+                f"Total: {total_time:.2f}s | Need ~{(config['total_timesteps'] - global_step) / fps / 3600:.2f} hours")
 
-            # --- Log metrics to Wandb ---
-            wandb_metrics = {
-                "ppo/mean_reward_100": mean_reward_100,
-                "ppo/mean_length_100": mean_length_100,
-                "ppo/fps": fps,
-                "ppo/learning_rate": current_lr,
-                "ppo/policy_loss": metrics["policy_loss"],
-                "ppo/value_loss": metrics["value_loss"],
-                "ppo/entropy": metrics["entropy_loss"],
-                "ppo/approx_kl": metrics["approx_kl"],
-                "ppo/clip_fraction": metrics["clip_fraction"],
-                "timing/env_interaction_time": env_interaction_time,
-                "timing/gpu_inference_time": gpu_inference_time,
-                "timing/gpu_learning_time": gpu_learning_time,
-                "timing/buffer_compute_time": buffer_compute_time,
-                "timing/total_time": total_time,
-                "timing/env_percentage": env_pct,
-                "timing/gpu_inf_percentage": gpu_inf_pct,
-                "timing/gpu_learn_percentage": gpu_learn_pct,
-                "timing/buffer_percentage": buffer_pct,
-                "rollout/num_rollouts": num_rollouts,
-                "rollout/global_step": global_step,
-                "rollout/rollout_duration": rollout_duration,
-                "rollout/steps_in_rollout": steps_in_rollout
-            }
-            
-            if mean_rollout_reward > -1:
-                wandb_metrics["ppo/mean_rollout_reward"] = mean_rollout_reward
-            
-            wandb.log(wandb_metrics, step=global_step)
+        # --- Log metrics to Wandb ---
+        wandb_metrics = {
+            "ppo/mean_reward_100": mean_reward_100,
+            "ppo/mean_length_100": mean_length_100,
+            "ppo/fps": fps,
+            "ppo/learning_rate": current_lr,
+            "ppo/policy_loss": metrics["policy_loss"],
+            "ppo/value_loss": metrics["value_loss"],
+            "ppo/entropy": metrics["entropy_loss"],
+            "ppo/approx_kl": metrics["approx_kl"],
+            "ppo/clip_fraction": metrics["clip_fraction"],
+            "timing/env_interaction_time": env_interaction_time,
+            "timing/gpu_inference_time": gpu_inference_time,
+            "timing/gpu_learning_time": gpu_learning_time,
+            "timing/buffer_compute_time": buffer_compute_time,
+            "timing/total_time": total_time,
+            "timing/env_percentage": env_pct,
+            "timing/gpu_inf_percentage": gpu_inf_pct,
+            "timing/gpu_learn_percentage": gpu_learn_pct,
+            "timing/buffer_percentage": buffer_pct,
+            "rollout/num_rollouts": num_rollouts,
+            "rollout/global_step": global_step,
+            "rollout/rollout_duration": rollout_duration,
+            "rollout/steps_in_rollout": steps_in_rollout
+        }
+        
+        if mean_rollout_reward > -1:
+            wandb_metrics["ppo/mean_rollout_reward"] = mean_rollout_reward
+        
+        wandb.log(wandb_metrics, step=global_step)
 
-            # --- Save Best Model ---
-            if mean_reward_100 > best_mean_reward and mean_reward_100 > 100:
-                best_mean_reward = mean_reward_100
-                best_model_path = os.path.join(config["save_dir"], f"best_model_{global_step}.pth")
-                print(f"New best mean reward: {best_mean_reward:.2f}. Saving model to {best_model_path}")
-                torch.save({
-                    'feature_extractor_state_dict': agent.feature_extractor.state_dict(),
-                    'actor_state_dict': agent.actor.state_dict(),
-                    'critic_state_dict': agent.critic.state_dict(),
-                    'global_step': global_step,
-                    'mean_reward': mean_reward_100, # Save the reward that triggered the save
-                    'config': config # Optionally save the config used
-                }, best_model_path)
-                
-                # Log best model to wandb
-                wandb.log({"best_mean_reward": best_mean_reward}, step=global_step)
+        # --- Save Best Model ---
+        if mean_reward_100 > best_mean_reward and mean_reward_100 > 100:
+            best_mean_reward = mean_reward_100
+            best_model_path = os.path.join(config["save_dir"], f"best_model_{global_step}.pth")
+            print(f"New best mean reward: {best_mean_reward:.2f}. Saving model to {best_model_path}")
+            torch.save({
+                'feature_extractor_state_dict': agent.feature_extractor.state_dict(),
+                'actor_state_dict': agent.actor.state_dict(),
+                'critic_state_dict': agent.critic.state_dict(),
+                'global_step': global_step,
+                'mean_reward': mean_reward_100, # Save the reward that triggered the save
+                'config': config # Optionally save the config used
+            }, best_model_path)
+            
+            # Log best model to wandb
+            wandb.log({"best_mean_reward": best_mean_reward}, step=global_step)
 
         # --- Save Checkpoint Periodically ---
         if num_rollouts > 0 and num_rollouts % config["save_interval"] == 0:
@@ -1494,7 +1492,6 @@ if __name__ == "__main__":
             }, checkpoint_path)
 
         if global_step >= config["total_timesteps"]:
-            print("Total timesteps reached. Exiting training loop.")
             break
 
     env.close()
