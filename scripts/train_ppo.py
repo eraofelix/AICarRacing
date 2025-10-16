@@ -37,7 +37,7 @@ config = {
 
     # PPO Core Parameters
     "total_timesteps": 1_000_000,       # Total number of training steps across all environments
-    "learning_rate": 0.0005,              # Learning rate for the optimizers
+    "learning_rate": 0.0006,              # Learning rate for the optimizers
     "buffer_size": 2048,                # Size of the rollout buffer per environment before updates
     "batch_size": 256,                  # Minibatch size for PPO updates
     "ppo_epochs": 6,                    # Number of optimization epochs per rollout
@@ -48,6 +48,7 @@ config = {
     "ent_coef": 0.008,                  # Coefficient for the entropy bonus in the total loss
     "max_grad_norm": 0.75,              # Maximum norm for gradient clipping
     "target_kl": 0.2,                  # Target KL divergence threshold (for monitoring, not early stopping)
+    "kl_lr_reduction_factor": 0.4,     # Learning rate reduction factor when KL divergence is too high
     "features_dim": 256,                # Dimensionality of features extracted by the CNN
 
     # Agent specific hyperparameters (previously defaults in PPOAgent)
@@ -714,6 +715,7 @@ class PPOAgent:
         self.max_grad_norm = config.get("max_grad_norm", 0.5)
         features_dim = config.get("features_dim", 64) # Needed for network init
         self.target_kl = config.get("target_kl", 0.02)
+        self.kl_lr_reduction_factor = config.get("kl_lr_reduction_factor", 0.4)
         self.initial_action_std = config.get("initial_action_std", 1.0)
         self.weight_decay = config.get("weight_decay", 1e-5)
         self.fixed_std = config.get("fixed_std", False)
@@ -936,7 +938,7 @@ class PPOAgent:
         }
         return avg_metrics
 
-    def learn(self, rollout_buffer):
+    def learn(self, rollout_buffer, global_step):
         """
         Performs the PPO learning update using standard precision (FP32).
 
@@ -954,6 +956,9 @@ class PPOAgent:
         # Accumulate metrics across all epochs and batches
         all_policy_losses, all_value_losses, all_entropy_losses = [], [], []
         all_kl_divs, clip_fractions = [], []
+        
+        # Track if we need to reduce learning rate due to high KL in this epoch
+        lr_reduced = False
 
         # PPO Optimization Loop
         for epoch in range(self.epochs):
@@ -989,6 +994,40 @@ class PPOAgent:
                 # Total Loss
                 loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
+                # --- KL Divergence Check ---
+                with torch.no_grad():
+                    # Approximate KL divergence
+                    approx_kl = 0.5 * torch.mean((log_probs - old_log_probs_batch)**2).item()
+                    # Clip fraction
+                    clip_frac = torch.mean((torch.abs(ratio - 1.0) > self.clip_epsilon).float()).item()
+
+                # Check if KL divergence is too high
+                if approx_kl > self.target_kl * 1.5:
+                    print(f"Warning: High KL divergence detected: {approx_kl:.4f} > 1.0. Skipping weight update and reducing learning rate.")
+                    
+                    # Reduce learning rate
+                    if not lr_reduced:
+                        current_lr = self.lr
+                        new_lr = current_lr * self.kl_lr_reduction_factor
+                        for param_group in self.actor_optimizer.param_groups:
+                            param_group['lr'] = new_lr
+                        for param_group in self.critic_optimizer.param_groups:
+                            param_group['lr'] = new_lr
+                        self.lr = new_lr
+                        lr_reduced = True
+                        wandb.log({"ppo/learning_rate": new_lr}, step=global_step+1)  # +1 因为会冲突，导致会写两次
+                        print(f"Learning rate reduced from {current_lr:.2e} to {new_lr:.2e}")
+                    
+                    # Skip weight update for this batch
+                    # Store metrics but don't update weights
+                    all_policy_losses.append(policy_loss.item())
+                    all_value_losses.append(value_loss.item())
+                    all_entropy_losses.append(entropy_loss.item())
+                    all_kl_divs.append(approx_kl)
+                    epoch_kl_divs.append(approx_kl)
+                    clip_fractions.append(clip_frac)
+                    continue
+
                 # --- Backward Pass and Optimization ---
                 # Zero gradients
                 self.actor_optimizer.zero_grad()
@@ -1004,13 +1043,6 @@ class PPOAgent:
                 # Update weights
                 self.actor_optimizer.step()
                 self.critic_optimizer.step()
-
-                # --- Logging Metrics ---
-                with torch.no_grad():
-                    # Approximate KL divergence
-                    approx_kl = 0.5 * torch.mean((log_probs - old_log_probs_batch)**2).item()
-                    # Clip fraction
-                    clip_frac = torch.mean((torch.abs(ratio - 1.0) > self.clip_epsilon).float()).item()
 
                 # Store metrics for this batch
                 all_policy_losses.append(policy_loss.item())
@@ -1385,7 +1417,7 @@ if __name__ == "__main__":
         if config["mixed_precision"] and config["device"] == "cuda":
             metrics = agent.learn_mixed_precision(buffer, scaler) # Use mixed precision update
         else:
-            metrics = agent.learn(buffer) # Use standard precision update
+            metrics = agent.learn(buffer, global_step) # Use standard precision update
         # if config["device"] == "cuda":
         #     torch.cuda.synchronize()
         gpu_learning_time += time.time() - learning_start
