@@ -47,7 +47,7 @@ config = {
     "ent_coef": 0.008,                  # Coefficient for the entropy bonus in the total loss
     "max_grad_norm": 0.75,              # Maximum norm for gradient clipping
     "target_kl": 0.2,                  # Target KL divergence threshold (for monitoring, not early stopping)
-    "kl_lr_reduction_factor": 0.4,     # Learning rate reduction factor when KL divergence is too high
+    "kl_lr_reduction_factor": 0.6,     # Learning rate reduction factor when KL divergence is too high
     "features_dim": 256,                # Dimensionality of features extracted by the CNN
 
     # Agent specific hyperparameters (previously defaults in PPOAgent)
