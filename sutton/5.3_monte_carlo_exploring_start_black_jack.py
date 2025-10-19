@@ -45,11 +45,14 @@ class MCAgentES:
         return 0 if q0 >= q1 else 1
 
 def play_one_episode_with_es(agent: MCAgentES, rng: random.Random) -> Tuple[List[Tuple[State, Action]], float]:
-    # Sample a feasible starting state by rejection
+    # 探索开始：随机选择初始状态-动作对
+    print("🎲 开始新的episode - 探索开始模式")
     while True:
         target_sum = rng.randint(12, 21)
         dealer_show = rng.randint(1, 10)
         ua = bool(rng.randint(0, 1))
+        print(f"🎯 目标状态: 玩家点数={target_sum}, 庄家明牌={dealer_show}, 软A={ua}")
+        
         # 生成可行的初始状态
         success = False
         for _ in range(5000):
@@ -61,7 +64,9 @@ def play_one_episode_with_es(agent: MCAgentES, rng: random.Random) -> Tuple[List
                 success = True
                 break
         if not success:
+            print("❌ 无法生成目标玩家手牌，重新尝试...")
             continue
+            
         # 生成可行的庄家牌
         for _ in range(5000):
             dealer = draw_hand(rng)
@@ -72,40 +77,64 @@ def play_one_episode_with_es(agent: MCAgentES, rng: random.Random) -> Tuple[List
             else:
                 continue
         break
+    
+    print(f"✅ 成功生成初始状态: 玩家={player}({hand_value(player)}), 庄家={dealer}({dealer[0]}明牌)")
 
     s = (hand_value(player), dealer[0], usable_ace(player))
     a = rng.choice([0, 1])
+    action_name = "停牌" if a == 0 else "要牌"
+    print(f"🎯 探索开始动作: {action_name} (随机选择)")
 
     episode_sa: List[Tuple[State, Action]] = []
     episode_sa.append((s, a))
 
-    # Execute first action
+    # 执行第一个动作
+    print(f"🃏 执行动作: {action_name}")
     if a == 1:
         player.append(draw_card(rng))
+        print(f"📈 要牌后: 玩家={player}({hand_value(player)})")
         if is_bust(player):
+            print("💥 玩家爆牌！游戏结束，奖励=-1")
             return episode_sa, -1.0
     else:
+        print("🛑 玩家停牌，庄家开始行动...")
         dealer_policy(dealer, rng)
+        print(f"🏦 庄家最终手牌: {dealer}({hand_value(dealer)})")
         if is_bust(dealer):
+            print("🎉 庄家爆牌！玩家获胜，奖励=+1")
             return episode_sa, +1.0
         pv, dv = hand_value(player), hand_value(dealer)
-        return episode_sa, float(1 if pv > dv else -1 if pv < dv else 0)
+        result = 1 if pv > dv else -1 if pv < dv else 0
+        result_text = "玩家获胜" if result > 0 else "庄家获胜" if result < 0 else "平局"
+        print(f"🏆 最终结果: 玩家={pv}, 庄家={dv}, {result_text}, 奖励={result}")
+        return episode_sa, float(result)
 
-    # Continue with ε-greedy policy
+    # 继续使用ε-贪婪策略
+    print("🔄 继续游戏，使用ε-贪婪策略...")
     while True:
         s = (hand_value(player), dealer[0], usable_ace(player))
         a = agent.policy(s)
+        action_name = "停牌" if a == 0 else "要牌"
+        print(f"🤖 智能体决策: 状态={s}, 动作={action_name}")
         episode_sa.append((s, a))
         if a == 1:
             player.append(draw_card(rng))
+            print(f"📈 要牌后: 玩家={player}({hand_value(player)})")
             if is_bust(player):
+                print("💥 玩家爆牌！游戏结束，奖励=-1")
                 return episode_sa, -1.0
         else:
+            print("🛑 玩家停牌，庄家开始行动...")
             dealer_policy(dealer, rng)
+            print(f"🏦 庄家最终手牌: {dealer}({hand_value(dealer)})")
             if is_bust(dealer):
+                print("🎉 庄家爆牌！玩家获胜，奖励=+1")
                 return episode_sa, +1.0
             pv, dv = hand_value(player), hand_value(dealer)
-            return episode_sa, float(1 if pv > dv else -1 if pv < dv else 0)
+            result = 1 if pv > dv else -1 if pv < dv else 0
+            result_text = "玩家获胜" if result > 0 else "庄家获胜" if result < 0 else "平局"
+            print(f"🏆 最终结果: 玩家={pv}, 庄家={dv}, {result_text}, 奖励={result}")
+            return episode_sa, float(result)
 
 def derive_greedy_policy(Q: Dict[State, Dict[Action, float]]) -> Dict[State, Action]:
     policy = {}
@@ -144,12 +173,21 @@ def mc_control_exploring_starts(
     last_policy_snapshot: Dict[State, Action] = {}
     last_log_time = start_time
 
+    print(f"🚀 开始蒙特卡洛探索开始训练，总episodes: {num_episodes:,}")
+    print("=" * 60)
+    
     for ep in range(1, num_episodes + 1):
+        print(f"\n --------------------------📊 Episode {ep}/{num_episodes}--------------------------")
         episode_sa, G = play_one_episode_with_es(agent, rng)
-        print(f"ep: {ep}, episode_sa: {episode_sa}, G: {G}")
+        
+        print(f"📈 Episode {ep} 结果: 奖励={G}, 状态-动作序列长度={len(episode_sa)}")
+        
         rewards_window.append(G)
         if ep % 100000 == 0:
-            print(f"Episode {ep}/{num_episodes}, distinct (s,a): {len(agent.returns_count)}, avg visits: {avg_visits:.2f}")
+            avg_visits = sum(agent.returns_count.values()) / max(1, len(agent.returns_count))
+            print(f"📊 Episode {ep}/{num_episodes}, 不同状态-动作对: {len(agent.returns_count)}, 平均访问次数: {avg_visits:.2f}")
+        
+        # 更新Q值表
         visited = set()
         for (s, a) in episode_sa:
             if (s, a) in visited:
@@ -158,7 +196,9 @@ def mc_control_exploring_starts(
             agent.returns_count[(s, a)] += 1
             n = agent.returns_count[(s, a)]
             q_old = agent.Q[s][a]
-            agent.Q[s][a] = q_old + (G - q_old) / n
+            agent.Q[s][a] = q_old + (G - q_old) / n  # 增量平均，无需存储历史样本省内存
+            
+            print(f"🔄 更新Q值: 状态={s}, 动作={a}, 旧值={q_old:.3f}, 新值={agent.Q[s][a]:.3f}, 访问次数={n}")
 
         if verbose and (ep % log_every == 0 or ep == 1):
             now = time.time()
@@ -201,8 +241,15 @@ def mc_control_exploring_starts(
     return agent.Q, state_visits
 
 def print_policy(policy: Dict[State, Action]):
+    print("\n🎯 学习到的最优策略:")
+    print("=" * 50)
+    print("说明: S=停牌(Stick), H=要牌(Hit)")
+    print("PS=玩家点数, DS=庄家明牌")
+    print()
+    
     def render(ua: bool):
-        print(f"Policy (usable_ace={ua})")
+        ace_type = "有软A" if ua else "无软A"
+        print(f"📋 策略表 (usable_ace={ua}) - {ace_type}")
         header = "PS\\DS | " + " ".join(f"{d:2d}" for d in range(1, 11))
         print(header)
         print("-" * len(header))
@@ -218,11 +265,27 @@ def print_policy(policy: Dict[State, Action]):
     render(True)
 
 if __name__ == "__main__":
-    NUM_EPISODES = 1000_000
+    print("🎮 21点游戏蒙特卡洛探索开始算法")
+    print("=" * 60)
+    print("算法说明:")
+    print("1. 🎯 探索开始: 每个episode从随机状态-动作对开始")
+    print("2. 🧠 ε-贪婪策略: 平衡探索和利用")
+    print("3. 📊 蒙特卡洛方法: 通过大量采样估计价值函数")
+    print("4. 🏆 目标: 学习最优的21点游戏策略")
+    print("=" * 60)
+    
+    NUM_EPISODES = 300000
     EPSILON = 0.1
     SEED = 2025
-    LOG_EVERY = 10_000
+    LOG_EVERY = 100  # 减少日志间隔用于演示
     RECENT_WINDOW = 50_000
+
+    print(f"🔧 训练参数:")
+    print(f"   - 总episodes: {NUM_EPISODES:,}")
+    print(f"   - ε值: {EPSILON}")
+    print(f"   - 随机种子: {SEED}")
+    print(f"   - 日志间隔: {LOG_EVERY:,}")
+    print()
 
     Q, visits = mc_control_exploring_starts(
         num_episodes=NUM_EPISODES,
@@ -233,60 +296,14 @@ if __name__ == "__main__":
         verbose=True
     )
 
+    print("\n🎉 训练完成！")
+    print(f"📊 总共学习了 {len(Q)} 个状态的价值函数")
+    print(f"📈 状态-动作对总访问次数: {sum(visits.values()):,}")
+    
     policy = derive_greedy_policy(Q)
     print_policy(policy)
-
-# Policy (usable_ace=False)  30w episodes
-# PS\DS |  1  2  3  4  5  6  7  8  9 10
-# -------------------------------------
-# 21  |  S  S  S  S  S  S  S  S  S  S
-# 20  |  S  S  S  S  S  S  S  S  S  S
-# 19  |  S  S  S  S  S  S  S  S  S  S
-# 18  |  S  S  S  S  S  S  S  S  S  S
-# 17  |  S  S  S  S  S  S  S  S  S  S
-# 16  |  H  S  S  S  S  S  H  H  S  S
-# 15  |  H  S  S  S  S  S  H  H  H  S
-# 14  |  H  S  S  S  S  S  H  H  H  H
-# 13  |  H  S  H  S  S  S  H  H  H  H
-# 12  |  H  H  H  S  S  S  H  H  H  H
-# Policy (usable_ace=True)
-# PS\DS |  1  2  3  4  5  6  7  8  9 10
-# -------------------------------------
-# 21  |  S  S  S  S  S  S  S  S  S  S
-# 20  |  S  S  S  S  S  S  S  S  S  S
-# 19  |  S  S  S  S  S  S  S  S  S  S
-# 18  |  H  S  S  S  S  S  S  S  H  S
-# 17  |  H  H  H  H  H  H  H  H  H  H
-# 16  |  H  H  H  H  H  H  H  H  H  H
-# 15  |  H  H  H  H  H  H  H  H  H  H
-# 14  |  H  H  H  H  H  H  H  H  H  H
-# 13  |  H  H  H  H  H  H  H  H  H  H
-# 12  |  H  H  H  H  H  H  H  H  H  H
-
-
-# Policy (usable_ace=False)
-# PS\DS |  1  2  3  4  5  6  7  8  9 10
-# -------------------------------------
-# 21  |  S  S  S  S  S  S  S  S  S  S
-# 20  |  S  S  S  S  S  S  S  S  S  S
-# 19  |  S  S  S  S  S  S  S  S  S  S
-# 18  |  S  S  S  S  S  S  S  S  S  S
-# 17  |  S  S  S  S  S  S  S  S  S  S
-# 16  |  H  S  S  S  S  S  H  H  S  S
-# 15  |  H  S  S  S  S  S  H  H  H  S
-# 14  |  H  S  S  S  S  S  H  H  H  H
-# 13  |  H  S  S  S  S  S  H  H  H  H
-# 12  |  H  S  H  S  S  S  H  H  H  H
-# Policy (usable_ace=True)
-# PS\DS |  1  2  3  4  5  6  7  8  9 10
-# -------------------------------------
-# 21  |  S  S  S  S  S  S  S  S  S  S
-# 20  |  S  S  S  S  S  S  S  S  S  S
-# 19  |  S  S  S  S  S  S  S  S  S  S
-# 18  |  H  S  S  S  S  S  S  S  H  S
-# 17  |  H  H  H  H  H  H  H  H  H  H
-# 16  |  H  H  H  H  H  H  H  H  H  H
-# 15  |  H  H  H  H  H  H  H  H  H  H
-# 14  |  H  H  H  H  H  H  H  H  H  H
-# 13  |  H  H  H  H  H  H  H  H  H  H
-# 12  |  H  H  H  H  H  H  H  H  H  H
+    
+    print("\n💡 策略解读:")
+    print("- 高点数(17-21)时通常停牌，避免爆牌")
+    print("- 低点数(12-16)时根据庄家明牌决定要牌或停牌")
+    print("- 有软A时策略更激进，因为A可以按1或11计算")
